@@ -135,3 +135,49 @@ Citation
     pages     = {2856-2865}
 }
 ```
+
+## ABCI上での実行
+
+### 0. 前準備
+ABCIのグループ領域`/groups/gcd50654`にKittiデータセットと学習済みNeRFモデルを配置している．<br>
+Kittiデータは，`/groups/gcd50654/tier4/dataset/kitti`, <br>NeRFは`/groups/gcd50654/neural-scene-graphs/example_weights/kitti_tracking_0006_example`に配置している．<br>
+従って，もう1度Kitti, NeRF weightのダウンロードコマンドを実行する必要はない．
+
+Virtual Kitti2を使いたい場合は，`download_virtual_kitti.sh`を実行すると同様に`/groups/gcd50654/tier4/dataset/vkitti2`が生成される．<br>
+
+今回は実行環境として，Singularityコンテナを立ち上げる．`docker/`以下にDockerfileがあるため，これを使ってsingularity imageファイルを作成する．<br>
+作成に関しては，以下のコマンドをABCI上で実行する．
+
+```bash
+# 初めにDockerfileをsingularity recipeファイル(*.sif)に変換する
+module load gcc/11.2.0 python/3.7/3.7.13
+python3 -m venv recipe 
+source recipe/bin/activate
+pip3 install spython
+spython recipe Dockerfile {image_name}.def
+deactivate
+
+# 次にsingularity recipeファイルからsingularity imageファイルを作成する
+# CUDAのランタイム上でコンテナイメージを作成したいので，インタラクティブジョブを投下する
+qrsh -g gcd50654 -l rt_G.small=1 -l h_rt=1:00:00
+cd ~/neural-scene-graphs/docker
+module load singularitypro 
+SINGULARITY_TMPDIR=$SGE_LOCALDIR singularity build --fakeroot {image_name}.sif {image_name}.def
+
+# イメージが作成できたら，{image_name}.sifが存在することを確認して，ジョブをキャンセルする
+exit
+
+# ローカルディスクが不足する恐れがあるので，image fileをグループ領域に移す
+cp {image_name}.sif /groups/gcd50654/neural-scene-graphs
+```
+
+こちらも同様だが，すでに`/groups/gcd50654/neural-scene-graphs/nerf.sif`が存在するので実行必要はない．
+
+### 1. Rendering 
+学習済みモデルを使用して，レンダリングを行う．
+```bash 
+qsub -g gcd50654 infer.sh
+```
+
+Rendringを行う際のオプションを変えたい場合は，`config_kitti_0006_example_render.txt`中のオプションを適宜変更すればいい．<br>
+例えば，使用するデータセットやNeRFモデルを変更したい場合は，`basedir`, `datadir`, `dataset_type`を変更すればいい．
