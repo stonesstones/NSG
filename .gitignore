@@ -22,3 +22,6 @@ axcana.egg-info
 *.gz
 *.avi
 /example_weights/
+data_loader/__pycache__/
+work/
+log4txt

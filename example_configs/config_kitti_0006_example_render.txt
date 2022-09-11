@@ -1,6 +1,8 @@
 expname = kitti_tracking_0006_example
-basedir = ./example_weights
-datadir = ./data/kitti/training/image02/0006
+# basedir = ./example_weights
+basedir = /groups/gcd50654/tier4/neural-scene-graphs/example_weights
+# datadir = ./data/kitti/training/image02/0006
+datadir = /groups/gcd50654/tier4/dataset/kitti/training/image02/0006
 dataset_type = kitti
 
 lrate=5e-4
