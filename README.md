@@ -149,7 +149,7 @@ Virtual Kitti2を使いたい場合は，`download_virtual_kitti.sh`を実行す
 作成に関しては，以下のコマンドをABCI上で実行する．
 
 ```bash
-# 初めにDockerfileをsingularity recipeファイル(*.sif)に変換する
+# 初めにDockerfileをsingularity recipeファイル(*.def)に変換する
 module load gcc/11.2.0 python/3.7/3.7.13
 python3 -m venv recipe 
 source recipe/bin/activate
@@ -157,7 +157,7 @@ pip3 install spython
 spython recipe Dockerfile {image_name}.def
 deactivate
 
-# 次にsingularity recipeファイルからsingularity imageファイルを作成する
+# 次にsingularity recipeファイル(*.def)からsingularity imageファイル(*.sif)を作成する
 # CUDAのランタイム上でコンテナイメージを作成したいので，インタラクティブジョブを投下する
 qrsh -g gcd50654 -l rt_G.small=1 -l h_rt=1:00:00
 cd ~/neural-scene-graphs/docker
