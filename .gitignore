@@ -25,3 +25,5 @@ axcana.egg-info
 data_loader/__pycache__/
 work/
 log4txt
+.venv
+dataset
