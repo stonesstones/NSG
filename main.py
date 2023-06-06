@@ -146,8 +146,8 @@ def render_rays(ray_batch,
         """
         # Function for computing density from model prediction. This value is
         # strictly between [0, 1].
-        def raw2alpha(raw, dists, act_fn=tf.nn.relu): return 1.0 - \
-            tf.exp(-act_fn(raw) * dists)
+        def raw2alpha(raw, dists, act_fn=tf.nn.relu): 
+            return 1.0 - tf.math.exp(-act_fn(raw) * dists)
 
         # Compute 'distance' (in time) between each integration time along a ray.
         dists = z_vals[..., 1:] - z_vals[..., :-1]
@@ -189,8 +189,7 @@ def render_rays(ray_batch,
         depth_map = tf.reduce_sum(weights * z_vals, axis=-1)
 
         # Disparity map is inverse depth.
-        disp_map = 1./tf.maximum(1e-10, depth_map /
-                                 tf.reduce_sum(weights, axis=-1))
+        disp_map = 1./tf.maximum(1e-10, depth_map / tf.maximum(1e-10, tf.reduce_sum(weights, axis=-1)))
 
         # Sum of weights along each ray. This value is in [0, 1] up to numerical error.
         acc_map = tf.reduce_sum(weights, -1)
@@ -1663,10 +1662,10 @@ def train():
     print('VAL views are', i_val)
 
     # Summary writers
-    writer = tf.contrib.summary.create_file_writer(
+    writer = tf.summary.create_file_writer(
         os.path.join(basedir, 'summaries', expname))
     writer.set_as_default()
-
+    tf.summary.experimental.set_step(global_step)
     for i in range(start, N_iters):
         time0 = time.time()
 
@@ -1771,7 +1770,10 @@ def train():
 
         if i % args.i_weights == 0:
             for k in models:
-                save_weights(models[k].get_weights(), k, i)
+                if k == "optimizer":
+                    save_weights(models[k].variables, k, i)
+                else:
+                    save_weights(models[k].get_weights(), k, i)
             if args.latent_size > 0:
                 for k in latent_encodings:
                     save_weights(latent_encodings[k].numpy(), k, i)
@@ -1779,17 +1781,19 @@ def train():
         if i % args.i_print == 0 or i < 10:
             print(expname, i, psnr.numpy(), loss.numpy(), global_step.numpy())
             print('iter time {:.05f}'.format(dt))
-            with tf.contrib.summary.record_summaries_every_n_global_steps(args.i_print):
-                tf.contrib.summary.scalar('loss', loss)
-                tf.contrib.summary.scalar('psnr', psnr)
+            should = lambda : tf.equal(global_step % args.i_print, 0)
+            with tf.summary.record_if(should):
+            # with tf.summary.contribe.record_summaries_every_n_global_steps(args.i_print):
+                tf.summary.scalar('loss', loss)
+                tf.summary.scalar('psnr', psnr)
                 # if args.N_importance > 0:
-                #     tf.contrib.summary.scalar('psnr0', psnr0)
+                #     tf.summary.scalar('psnr0', psnr0)
                 # else:
-                #     tf.contrib.summary.histogram('tran', trans)
+                #     tf.summary.histogram('tran', trans)
 
                 if args.latent_size > 0:
                     for latent_vector_sum in list(render_kwargs_train['latent_vector_dict'].values()):
-                        tf.contrib.summary.histogram(
+                        tf.summary.histogram(
                             latent_vector_sum.name,
                             latent_vector_sum.value(),
                         )
@@ -1831,25 +1835,26 @@ def train():
                     os.makedirs(testimgdir, exist_ok=True)
                 imageio.imwrite(os.path.join(testimgdir, '{:06d}.png'.format(i)), to8b(rgb))
 
-                with tf.contrib.summary.record_summaries_every_n_global_steps(args.i_img):
+                # with tf.summary.record_summaries_every_n_global_steps(args.i_img):
+                with tf.summary.record_if(should):
 
-                    tf.contrib.summary.image('rgb', to8b(rgb)[tf.newaxis])
-                    tf.contrib.summary.image(
+                    tf.summary.image('rgb', to8b(rgb)[tf.newaxis])
+                    tf.summary.image(
                         'disp', disp[tf.newaxis, ..., tf.newaxis])
-                    tf.contrib.summary.image(
+                    tf.summary.image(
                         'acc', acc[tf.newaxis, ..., tf.newaxis])
 
-                    tf.contrib.summary.scalar('psnr_holdout', psnr)
-                    tf.contrib.summary.image('rgb_holdout', target[tf.newaxis])
+                    tf.summary.scalar('psnr_holdout', psnr)
+                    tf.summary.image('rgb_holdout', target[tf.newaxis])
 
                 if args.N_importance > 0:
 
-                    with tf.contrib.summary.record_summaries_every_n_global_steps(args.i_img):
-                        tf.contrib.summary.image(
+                    with tf.summary.record_summaries_every_n_global_steps(args.i_img):
+                        tf.summary.image(
                             'rgb0', to8b(extras['rgb0'])[tf.newaxis])
-                        tf.contrib.summary.image(
+                        tf.summary.image(
                             'disp0', extras['disp0'][tf.newaxis, ..., tf.newaxis])
-                        tf.contrib.summary.image(
+                        tf.summary.image(
                             'z_std', extras['z_std'][tf.newaxis, ..., tf.newaxis])
 
         global_step.assign_add(1)
