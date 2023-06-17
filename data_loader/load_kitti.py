@@ -103,7 +103,7 @@ def get_obj_pose_tracking(tracklet_path, poses_imu_tracking, calibrations, selec
                 width = tracklet[11]
                 objects_meta_kitti[int(id)] = np.array([float(id), type, length, height, width])
 
-            tr_array = np.concatenate([np.array(tracklet[:2]).astype(np.float), np.array([type]), np.array(tracklet[3:]).astype(np.float)])
+            tr_array = np.concatenate([np.array(tracklet[:2]).astype(np.float64), np.array([type]), np.array(tracklet[3:]).astype(np.float64)])
             tracklets_ls.append(tr_array)
             n_obj_in_frame[int(tracklet[0])] += 1
 

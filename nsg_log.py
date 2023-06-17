@@ -1,9 +1,12 @@
 from torch.utils.tensorboard import SummaryWriter
+from torchvision.utils import make_grid
 import os
+import torch
 
 class Logger:
-    def __init__(self, log_dir, global_step=0):
+    def __init__(self, log_dir, model_log_dir,global_step=0):
         self._log_dir = log_dir
+        self._model_log_dir = model_log_dir
         self._writer = SummaryWriter(log_dir=self._log_dir)
         self.global_step = global_step
         print('########################')
@@ -11,15 +14,21 @@ class Logger:
         print('global step start at: ', self.global_step)
         print('########################')
     
-    def add_scalar(self, scalar_dict):
+    def add_scalars(self, scalar_dict):
         for key, value in scalar_dict.items():
-                print('{} : {}'.format(key, value))
+                print('{}: {}'.format(key, value))
                 self._writer.add_scalar(f"{key}", value, global_step=self.global_step)
 
-    def add_histogram(self, scalar_dict):
+    def add_histograms(self, scalar_dict):
         for key, value in scalar_dict.items():
-                print('{} : {}'.format(key, value))
+                print('{}: {}'.format(key, value))
                 self._writer.add_histogram(f"{key}", value, global_step=self.global_step)
+
+    def add_images(self, image_dict):
+        for key, img in image_dict.items():
+                print('image: {}, shape: {}'.format(key, img.shape))
+                grid = make_grid(img)
+                self._writer.add_images(f"{key}", grid, global_step=self.global_step, dataformats='HWC')
 
     def add_global_step(self):
         self.global_step += 1
@@ -30,11 +39,8 @@ class Logger:
     def should_record(self, step) -> bool:
         return (self.global_step % step) == 0
 
-    def save_weights(self, mpdel, i):
-        pass
-        # path = os.path.join(self._log_dir, '{}_{:06d}.npy'.format(prefix, i))
-        # np.save(path, weights)
-        # print('saved weights at', path)
-        # if args.latent_size > 0:
-        #     for k in latent_encodings:
-        #         save_weights(latent_encodings[k].numpy(), k, i)
+    def save_weights(self, models, i):
+        for key, model in models.items():
+            path = os.path.join(self._model_log_dir, '{}_{:06d}.pth'.format(key, i))
+            torch.save(model.state_dict(), path)
+            print('saved weights at', path)

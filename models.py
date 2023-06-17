@@ -17,6 +17,23 @@ from nerfstudio.fields.base_field import Field
 from nerfstudio.field_components.encodings import NeRFEncoding
 from jaxtyping import Float, Int, Shaped
 from nerfstudio.utils.math import expected_sin
+from dataclasses import dataclass
+from nerfstudio.utils.tensor_dataclass import TensorDataclass
+
+@dataclass
+class Frustums(TensorDataclass):
+    """Describes region of space as a frustum."""
+
+    positions: Float[Tensor, "*bs 3"]
+    """xyz coordinate for ray origin."""
+    directions: Float[Tensor, "*bs 3"]
+    """Direction of ray."""
+
+@dataclass
+class MyRaySamples(TensorDataclass):
+    """Samples along a ray"""
+    frustums: Frustums
+    """Frustums along ray."""
 
 # TODO logに対応している？
 class NeRFEncoding(Encoding):
@@ -135,14 +152,15 @@ class NeRFField(Field):
         for field_head in self.field_heads:
             field_head.set_in_dim(self.mlp_head.get_out_dim())  # type: ignore
 
-    def get_density(self, ray_samples: RaySamples) -> Tuple[Tensor, Tensor]:
+    def get_density(self, ray_samples: MyRaySamples) -> Tuple[Tensor, Tensor]:
         if self.use_integrated_encoding:
             gaussian_samples = ray_samples.frustums.get_gaussian_blob()
             if self.spatial_distortion is not None:
                 gaussian_samples = self.spatial_distortion(gaussian_samples)
             encoded_xyz = self.position_encoding(gaussian_samples.mean, covs=gaussian_samples.cov)
         else:
-            positions = ray_samples.frustums.get_positions()
+            # positions = ray_samples.frustums.get_positions()
+            positions = ray_samples.frustums.positions
             if self.spatial_distortion is not None:
                 positions = self.spatial_distortion(positions)
             encoded_xyz = self.position_encoding(positions)
@@ -151,7 +169,7 @@ class NeRFField(Field):
         return density, base_mlp_out
 
     def get_outputs(
-        self, ray_samples: RaySamples, density_embedding: Optional[Tensor] = None
+        self, ray_samples: MyRaySamples, density_embedding: Optional[Tensor] = None
     ) -> Dict[FieldHeadNames, Tensor]:
         outputs = {}
         for field_head in self.field_heads:
@@ -159,3 +177,24 @@ class NeRFField(Field):
             mlp_out = self.mlp_head(torch.cat([encoded_dir, density_embedding], dim=-1))  # type: ignore
             outputs[field_head.field_head_name] = field_head(mlp_out)
         return outputs
+
+    def forward(self, ray_samples: MyRaySamples, compute_normals: bool = False) -> Dict[FieldHeadNames, Tensor]:
+        """Evaluates the field at points along the ray.
+
+        Args:
+            ray_samples: Samples to evaluate field on.
+        """
+        if compute_normals:
+            with torch.enable_grad():
+                density, density_embedding = self.get_density(ray_samples)
+        else:
+            density, density_embedding = self.get_density(ray_samples)
+
+        field_outputs = self.get_outputs(ray_samples, density_embedding=density_embedding)
+        field_outputs[FieldHeadNames.DENSITY] = density  # type: ignore
+
+        if compute_normals:
+            with torch.enable_grad():
+                normals = self.get_normals()
+            field_outputs[FieldHeadNames.NORMALS] = normals  # type: ignore
+        return field_outputs

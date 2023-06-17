@@ -291,7 +291,7 @@ def get_all_ray_3dbox_intersection(rays_rgb, obj_meta_tensor, chunk, local=False
         _objs = torch.reshape(_tf_rays_rgb[:, 3:, :], [_n_bt_i, _n_obj, 6])
         _obj_pose = _objs[..., :3]
         _obj_theta = _objs[..., 3]
-        _obj_id = torch.tensor(_objs[..., 4], dtype=torch.int32)
+        _obj_id = _objs[..., 4].to(torch.int32)
         _obj_meta = obj_meta_tensor[_obj_id] #TODO　ほんと？
         _obj_track_id = _obj_meta[..., 0].unsqueeze(-1)
         _obj_dim = _obj_meta[..., 1:4]
@@ -299,9 +299,9 @@ def get_all_ray_3dbox_intersection(rays_rgb, obj_meta_tensor, chunk, local=False
         _mask = box_pts(_rays_bt, _obj_pose, _obj_theta, _obj_dim, one_intersec_per_ray=False)[8]
         if _mask is not None:
             if rays_on_obj.any():
-                rays_on_obj = np.concatenate([rays_on_obj, np.array(i * _batch_sz_inter + _mask[:, 0])])
+                rays_on_obj = np.concatenate([rays_on_obj, np.array(i * _batch_sz_inter + _mask[0])])
             else:
-                rays_on_obj = np.array(i * _batch_sz_inter + _mask[:, 0]) # rays on object without hit id
+                rays_on_obj = np.array(i * _batch_sz_inter + _mask[0]) # rays on object without hit id
             if obj_to_remove is not None:
                 # TODO gather_nd to torch
                 _hit_id = _obj_track_id[_mask] #t hit id
@@ -336,18 +336,18 @@ def resample_rays(rays_rgb, rays_bckg, obj_meta_tensor, objects_meta, scene_obje
     _batch_sz_inter = chunk if not local else 5000
     _n_rays = rays_rgb.shape[0]
     _n_obj = (rays_rgb.shape[1] - 3) // 2
-    _n_bt = np.ceil(_n_rays / _batch_sz_inter).astype(np.int32) # 
+    _n_bt = np.ceil(_n_rays / _batch_sz_inter).astype(np.int32)  
     _obj_counts = np.zeros(np.max(np.array(scene_objects)).astype(np.int32) + 1)
 
     _new_rays_rgb = [None] * (np.max(np.array(scene_objects)).astype(np.int32) + 1)
     for i in range(_n_bt):
-        _tf_rays_rgb = torch.tensor(rays_rgb[i * chunk:(i + 1) * chunk], torch.float32)
+        _tf_rays_rgb = torch.tensor(rays_rgb[i * chunk:(i + 1) * chunk], dtype=torch.float32)
         _n_bt_i = _tf_rays_rgb.shape[0]
         _rays_bt = [_tf_rays_rgb[:, 0, :], _tf_rays_rgb[:, 1, :]]
         _objs = torch.reshape(_tf_rays_rgb[:, 3:, :], [_n_bt_i, _n_obj, 6])
         _obj_pose = _objs[..., :3]
         _obj_theta = _objs[..., 3]
-        _obj_id = torch.tensor(_objs[..., 4], torch.int32)
+        _obj_id = _objs[..., 4].to(torch.int32)
         _obj_meta = obj_meta_tensor[_obj_id]
         _obj_track_id = _obj_meta[..., 0].unsqueeze(-1)
         _obj_dim = _obj_meta[..., 1:4]
@@ -357,10 +357,11 @@ def resample_rays(rays_rgb, rays_bckg, obj_meta_tensor, objects_meta, scene_obje
             _hit_id = _obj_track_id[_mask]
             # ここでobjectごとにrayを分ける
             for k in scene_objects:
-                _k_mask = _mask[torch.where(_hit_id == torch.tensor(k))]
-                _k_rays = _tf_rays_rgb[_k_mask]
+                _k_mask_id = torch.where(_hit_id == torch.tensor(k))[0]
+                _k_mask = (_mask[0][_k_mask_id],_mask[1][_k_mask_id])
+                _k_rays = _tf_rays_rgb[_k_mask[0]]
 
-                _obj_counts[int(k)] += np.array(_k_mask).shape[0]
+                _obj_counts[int(k)] += torch.sum((_hit_id == torch.tensor(k)).to(torch.int32))
                 if _new_rays_rgb[int(k)] is None:
                     _new_rays_rgb[int(k)] = []
                 _new_rays_rgb[int(k)].append(_k_rays)
@@ -435,7 +436,7 @@ def resample_rays(rays_rgb, rays_bckg, obj_meta_tensor, objects_meta, scene_obje
 
 
             _hit_factor = np.minimum(_hit_factor, 1e1)
-            _eq_sz_rays = np.repeat(np.concatenate(np.array(_new_rays_rgb[_id_hit]), axis=0), _hit_factor, axis=0)
+            _eq_sz_rays = np.repeat(np.array(torch.cat(_new_rays_rgb[_id_hit], dim=0)), _hit_factor, axis=0)
             rays_rgb.append(np.array(_eq_sz_rays))
 
     rays_rgb = np.concatenate(rays_rgb, axis=0)

@@ -71,8 +71,8 @@ def manipulate_obj_pose(manipulation, obj, obj_meta, i, rm_obj=None):
             obj = remove_obj_from_set(obj, obj_meta, rm_obj)
 
     if manipulation is None:
-        obj_i = tf.cast(obj[i], tf.float32)
-        obj_i = tf.reshape(obj_i, [obj_i.shape[0] // 2, 2 * 3])
+        obj_i = torch.tensor(obj[i], dtype=torch.float32)
+        obj_i = torch.reshape(obj_i, [obj_i.shape[0] // 2, 2 * 3])
         render_set.append([obj_i])
 
     elif manipulation == 'rotate':
@@ -83,16 +83,16 @@ def manipulate_obj_pose(manipulation, obj, obj_meta, i, rm_obj=None):
         obj[..., 0:2, :] = rotate_obj
 
         for obj_i in obj:
-            obj_i = tf.cast(obj_i, tf.float32)
-            obj_i = tf.reshape(obj_i, [obj_i.shape[0] // 2, 2 * 3])
+            obj_i = torch.tensor(obj_i, dtype=torch.float32)
+            obj_i = torch.reshape(obj_i, [obj_i.shape[0] // 2, 2 * 3])
             render_set.append([obj_i])
 
     elif manipulation == 'dance':
         obj = dancing_objects(obj[i])
 
         for obj_i in obj:
-            obj_i = tf.cast(obj_i, tf.float32)
-            obj_i = tf.reshape(obj_i, [obj_i.shape[0] // 2, 2 * 3])
+            obj_i = torch.tensor(obj_i, dtype=torch.float32)
+            obj_i = torch.reshape(obj_i, [obj_i.shape[0] // 2, 2 * 3])
             render_set.append([obj_i])
 
     elif manipulation == 'move':
@@ -107,7 +107,7 @@ def manipulate_obj_pose(manipulation, obj, obj_meta, i, rm_obj=None):
         obj[:, 0, :] = render_obj_poses
 
         for obj_i in obj:
-            obj_i = tf.cast(obj_i, tf.float32)
+            obj_i = torch.tensor(obj_i, dtype=torch.float32)
             render_set.append([obj_i])
 
     elif manipulation == 'switch_location':
@@ -116,8 +116,8 @@ def manipulate_obj_pose(manipulation, obj, obj_meta, i, rm_obj=None):
         np.random.shuffle(obj_ids)
         obj_i[:, 4] = obj_ids
 
-        obj_i = tf.cast(obj[i], tf.float32)
-        obj_i = tf.reshape(obj_i, [obj_i.shape[0] // 2, 2 * 3])
+        obj_i = torch.tensor(obj[i], dtype=torch.float32)
+        obj_i = torch.reshape(obj_i, [obj_i.shape[0] // 2, 2 * 3])
         render_set.append([obj_i])
 
     elif manipulation == 'oversample':
@@ -159,7 +159,7 @@ def manipulate_obj_pose(manipulation, obj, obj_meta, i, rm_obj=None):
             obj_i = np.concatenate([obj_pose, indexing[None], obj_classe[None]], axis=0)
             obj_flat.append(obj_i)
 
-        obj_i = tf.cast(np.array(obj_flat), tf.float32)
+        obj_i = torch.tensor(np.array(obj_flat), dtype=torch.float32)
         render_set.append([obj_i])
 
     elif manipulation == 'traffic_jam':
@@ -188,15 +188,15 @@ def manipulate_obj_pose(manipulation, obj, obj_meta, i, rm_obj=None):
 
             obj_flat = np.delete(obj_flat, np.array(close_poses), axis=0)
 
-        obj_flat = np.delete(obj_flat, tf.where(obj_flat[:, 0] == -1), axis=0)
-        obj_i = tf.cast(obj_flat, tf.float32)
+        obj_flat = np.delete(obj_flat, torch.where(obj_flat[:, 0] == -1), dim=0)
+        obj_i = torch.tensor(obj_flat, dtype=torch.float32)
         render_set.append([obj_i])
 
     elif manipulation == 'background':
         obj_i = np.reshape(obj[i], [-1, 6])
         obj_i = -1 * np.ones_like(obj_i)
         obj_i[..., 4] = 0.
-        obj_i = tf.cast(obj_i, tf.float32)
+        obj_i = torch.tensor(obj_i, dtype=torch.float32)
         render_set.append([obj_i])
 
     elif manipulation == 'translate':
@@ -207,7 +207,7 @@ def manipulate_obj_pose(manipulation, obj, obj_meta, i, rm_obj=None):
             for d in np.linspace(-2., 2., 15):
                 obj_i = -1 * np.ones_like(obj_old)
                 obj_i[0] = obj_old[j] + np.array([0., 0., d, 0., 0., 0.])
-                obj_i = tf.cast(obj_i, tf.float32)
+                obj_i = torch.tensor(obj_i, dtype=torch.float32)
                 render_set.append([obj_i])
 
     return render_set

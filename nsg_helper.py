@@ -9,9 +9,9 @@ from models import NeRFEncoding, NeRFField
 
 def img2mse(x, y): return torch.mean(torch.square(x - y))
 
-def mse2psnr(x): return -10*torch.log10(x)/torch.log10(10)
+def mse2psnr(x): return -10*torch.log10(x)/torch.log10(torch.tensor(10.))
 
-def to8b(x): return (255*np.clip(x, 0, 1)).astype(np.uint8)
+def to8b(x): return (255*torch.clip(x, 0, 1)).to(torch.uint8)
 
 
 def latentReg(z, reg): return torch.sum([1/reg * torch.norm(latent_i) for latent_i in z])
@@ -24,14 +24,14 @@ def get_embedder(multires, i=0, input_dims=3):
     return encoder, encoder.get_out_dim()
 
 
-def init_nerf_model(pos_enc, dir_enc, D=8, W=256, input_ch=3, input_ch_color_head=3, output_ch=4, skips=(4,), use_viewdirs=False, trainable=True):
+def init_nerf_model(pos_enc, dir_enc, base_mlp_num_layers=8, base_mlp_layer_width=256, head_mlp_num_layers=4, head_mlp_layer_width=128, skips=(4,), use_viewdirs=False, trainable=True):
 
     model = NeRFField(position_encoding=pos_enc, 
                       direction_encoding=dir_enc, 
-                      base_mlp_num_layers=D,
-                      base_mlp_layer_width=W,
-                      head_mlp_num_layers=4,
-                      head_mlp_layer_width=W//2,
+                      base_mlp_num_layers=base_mlp_num_layers,
+                      base_mlp_layer_width=base_mlp_layer_width,
+                      head_mlp_num_layers=head_mlp_num_layers,
+                      head_mlp_layer_width=head_mlp_layer_width,
                       skip_connections=skips)
     return model
 
@@ -48,13 +48,13 @@ def init_latent_vector(latent_size, name=None):
 # Ray helpers
 def get_rays(H, W, focal, c2w):
     """Get ray origins, directions from a pinhole camera."""
-    # Tensorflow version
-    i, j = tf.meshgrid(tf.range(W, dtype=tf.float32),
-                       tf.range(H, dtype=tf.float32), indexing='xy')
-    dirs = tf.stack([(i-W*.5)/focal, -(j-H*.5)/focal, -tf.ones_like(i)], -1)
-    rays_d = tf.reduce_sum(dirs[..., np.newaxis, :] * c2w[:3, :3], -1)
-    rays_o = tf.broadcast_to(c2w[:3, -1], tf.shape(rays_d))
-    return rays_o, rays_d
+    # Torch Version
+    i, j = np.meshgrid(np.arange(W, dtype=np.float32),
+                       np.arange(H, dtype=np.float32), indexing='xy')
+    dirs = np.stack([(i-W*.5)/focal, -(j-H*.5)/focal, -np.ones_like(i)], -1)
+    rays_d = np.sum(dirs[..., np.newaxis, :] * c2w[:3, :3], -1)
+    rays_o = np.broadcast_to(c2w[:3, -1], np.shape(rays_d))
+    return torch.tensor(rays_o), torch.tensor(rays_d)
 
 
 def get_rays_np(H, W, focal, c2w):
@@ -156,7 +156,7 @@ def plane_pts(rays, planes, id_planes, near, method='planes'):
     """
     # Extract ray and plane definitions
     rays_o, rays_d = rays
-    N_rays = rays_o.get_shape().as_list()[0]
+    N_rays = rays_o.shape[0]
     plane_bds, plane_normal, delta = planes
 
     # Get amount of all planes
@@ -230,8 +230,9 @@ def scale_frames(p, sc_factor, inverse=False):
     Returns:
         p_scaled: Points given in N_frames rescaled frames [N_points, N_frames, N_samples, 3]
     """
+    device = p.device
     # Take 150% of bbox to include shadows etc.
-    dim = torch.tensor([1., 1., 1.], dtype=torch.float32) * sc_factor
+    dim = torch.tensor([1., 1., 1.], dtype=torch.float32).to(device) * sc_factor
     # dim = tf.constant([0.1, 0.1, 0.1]) * sc_factor
 
     half_dim = dim / 2
@@ -263,7 +264,7 @@ def world2object(pts, dirs, pose, theta_y, dim=None, inverse=False):
         pts_w: 3d points transformed into object frame (world frame for inverse task)
         dir_w: unit - 3d directions transformed into object frame (world frame for inverse task)
     """
-
+    device = pts.device
     #  Prepare args if just one sample per ray-object or world frame only
     if len(pts.shape) == 3: #TODO あとで
         # [batch_rays, n_obj, samples, xyz]
@@ -279,8 +280,8 @@ def world2object(pts, dirs, pose, theta_y, dim=None, inverse=False):
         pts = torch.reshape(pts, [-1, 3])
 
     # Shift the object reference point to the middle of the bbox (vkitti2 specific)
-    y_shift = (torch.tensor([0., -1., 0.], dtype=torch.float32)[None, :] if inverse else
-               torch.tensor([0., -1., 0.], dtype=torch.float32)[None, None, :]) * \
+    y_shift = (torch.tensor([0., -1., 0.], dtype=torch.float32)[None, :].to(device) if inverse else
+               torch.tensor([0., -1., 0.], dtype=torch.float32)[None, None, :]).to(device) * \
               (dim[..., 1] / 2)[..., None]
     pose_w = pose + y_shift
 
@@ -343,7 +344,7 @@ def object2world(pts, dirs, pose, theta_y, dim=None, inverse=True):
         pts_w: 3d points transformed into world frame
         dir_w: unit - 3d directions transformed into world frame
     """
-
+    device = pts.device
     #  Prepare args if just one sample per ray-object
     if len(pts.shape) == 3:
         # [N_rays, N_obj, N_obj_samples, xyz]
@@ -359,7 +360,7 @@ def object2world(pts, dirs, pose, theta_y, dim=None, inverse=True):
         pts = torch.reshape(pts, [-1, 3])
 
     # Shift the object reference point to the middle of the bbox (vkitti2 specific)
-    y_shift = torch.tensor([0., -1., 0.], dtype=torch.float32)[None, :] * (dim[..., 1] / 2)[..., None]
+    y_shift = torch.tensor([0., -1., 0.], dtype=torch.float32)[None, :].to(device) * (dim[..., 1] / 2)[..., None]
     pose_w = pose + y_shift
 
     # Describes the origin of the world system w in the object system o
@@ -423,9 +424,9 @@ def ray_box_intersection(ray_o, ray_d, aabb_min=None, aabb_max=None):
     intersection_map = torch.where(t_far > t_near)
     # Check that boxes are in front of the ray origin TODO　あってるかわからない
     positive_far = torch.where(t_far[intersection_map] > 0)
-    intersection_map = (intersection_map[0][positive_far], intersection_map[1][positive_far])
+    intersection_map = (intersection_map[0][positive_far[0]], intersection_map[1][positive_far[0]])
 
-    if not intersection_map.shape[0] == 0:
+    if not intersection_map[0].shape[0] == 0:
         z_ray_in = t_near[intersection_map]
         z_ray_out = t_far[intersection_map]
     else:
@@ -553,30 +554,32 @@ def get_closest_intersections(z_vals_w, intersection_map, N_rays, N_obj):
     """
     # Flat to dense indices
     # Create matching ray-object intersectin matrix with index for all z_vals
-    id_z_vals = tf.scatter_nd(intersection_map, tf.range(z_vals_w.shape[0]), [N_rays, N_obj])
+    id_z_vals = torch.zeros([N_rays, N_obj], dtype=torch.int32)
+    id_z_vals[intersection_map] = torch.arange(z_vals_w.shape[0], dtype=torch.int32)
     # Create ray-index array
-    id_ray = tf.cast(tf.range(N_rays), tf.int64)
+    id_ray = torch.arange(N_rays).to(torch.int64)
 
     # Flat to dense values
     # Scatter z_vals in world coordinates to ray-object intersection matrix
-    z_scatterd = tf.scatter_nd(intersection_map, z_vals_w, [N_rays, N_obj])
+    z_scatterd = torch.zeros([N_rays, N_obj])
+    z_scatterd[intersection_map] = z_vals_w
     # Set empty intersections to 1e10
-    z_scatterd_nz = tf.where(tf.equal(z_scatterd, 0), tf.ones_like(z_scatterd) * 1e10, z_scatterd)
+    z_scatterd_nz = torch.where(z_scatterd == 0, torch.ones_like(z_scatterd) * 1e10, z_scatterd)
 
     # Get minimum values along each ray and corresponding ray-box intersection id
-    id_min = tf.argmin(z_scatterd_nz, axis=1)
-    id_reduced = tf.concat([id_ray[:, None], id_min[:, None]], axis=1)
-    z_vals_w_reduced = tf.gather_nd(z_scatterd, id_reduced)
+    id_min = torch.argmin(z_scatterd_nz, dim=1)
+    id_reduced = (id_ray, id_min)
+    z_vals_w_reduced = z_scatterd[id_reduced]
 
     # Remove all rays w/o intersections (min(z_vals_reduced) == 0)
-    id_non_zeros = tf.where(tf.not_equal(z_vals_w_reduced, 0))
+    id_non_zeros = torch.where(z_vals_w_reduced != 0)
     if len(id_non_zeros) != N_rays:
-        z_vals_w_reduced = tf.gather_nd(z_vals_w_reduced, id_non_zeros)
-        id_reduced = tf.gather_nd(id_reduced, id_non_zeros)
+        z_vals_w_reduced = z_vals_w_reduced[id_non_zeros]
+        id_reduced = (id_reduced[0][id_non_zeros], id_reduced[1][id_non_zeros])
 
     # Get intersection map only for closest intersection to the ray origin
     intersection_map_reduced = id_reduced
-    id_first_intersect = tf.gather_nd(id_z_vals, id_reduced)[:, None]
+    id_first_intersect = id_z_vals[id_reduced]
 
     return z_vals_w_reduced, intersection_map_reduced, id_first_intersect
 
@@ -598,14 +601,15 @@ def combine_z(z_vals_bckg, z_vals_obj_w, intersection_map, N_rays, N_samples, N_
         id_z_vals_bckg:
         id_z_vals_obj:
     """
+    device = z_vals_bckg.device
     if z_vals_obj_w is None:
-        z_vals_obj_w_sparse = torch.zeros([N_rays, N_obj * N_samples_obj])
+        z_vals_obj_w_sparse = torch.zeros([N_rays, N_obj * N_samples_obj]).to(device)
     else:
-        z_vals_obj_w_sparse = torch.zeros([N_rays, N_obj, N_samples_obj])
+        z_vals_obj_w_sparse = torch.zeros([N_rays, N_obj, N_samples_obj]).to(device)
         z_vals_obj_w_sparse[intersection_map] = z_vals_obj_w
         z_vals_obj_w_sparse = torch.reshape(z_vals_obj_w_sparse, [N_rays, N_samples_obj * N_obj])
 
-    sample_range = torch.range(0, N_rays)
+    sample_range = torch.arange(0, N_rays)
     obj_range = torch.repeat_interleave(torch.repeat_interleave(sample_range[:, None, None], N_obj, dim=1), N_samples_obj, dim=2)
 
     # Get ids to assign z_vals to each model
@@ -613,18 +617,16 @@ def combine_z(z_vals_bckg, z_vals_obj_w, intersection_map, N_rays, N_samples, N_
         if len(z_vals_bckg.shape) < 2:
             z_vals_bckg = z_vals_bckg[None]
         # Combine and sort z_vals along each ray
-        z_vals = torch.sort(torch.cat([z_vals_obj_w_sparse, z_vals_bckg], dim=1), dim=1)
+        z_vals = torch.sort(torch.cat([z_vals_obj_w_sparse, z_vals_bckg], dim=1), dim=1).values
 
         bckg_range = torch.repeat_interleave(sample_range[:, None, None], N_samples, dim=1)
-        id_z_vals_bckg = torch.cat([bckg_range, torch.searchsorted(z_vals, z_vals_bckg)[..., None]], axis=2)
+        id_z_vals_bckg = (bckg_range[...,0], torch.searchsorted(z_vals, z_vals_bckg.contiguous()))
     else:
         z_vals = torch.sort(z_vals_obj_w_sparse, axis=1)
         id_z_vals_bckg = None
 
     # id_z_vals_obj = tf.concat([obj_range, tf.searchsorted(z_vals, z_vals_obj_w_sparse)], axis=2)
-    id_z_vals_obj = torch.cat([obj_range[..., None],
-                               torch.reshape(torch.searchsorted(z_vals, z_vals_obj_w_sparse), [N_rays, N_obj, N_samples_obj])[..., None]
-                               ], axis=-1)
+    id_z_vals_obj = (obj_range, torch.reshape(torch.searchsorted(z_vals, z_vals_obj_w_sparse.contiguous()), [N_rays, N_obj, N_samples_obj]))
 
     return z_vals, id_z_vals_bckg, id_z_vals_obj
 

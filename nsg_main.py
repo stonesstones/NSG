@@ -4,7 +4,7 @@ import time
 os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
 
 from nsg_helper import *
-from data_loader.load_vkitti import load_vkitti_data
+# from data_loader.load_vkitti import load_vkitti_data
 from data_loader.load_kitti import load_kitti_data, plot_kitti_poses, tracking2txt
 from nsg_prepare_input_helper import *
 from nsg_manipulation import *
@@ -15,23 +15,25 @@ import imageio
 import cv2
 import torch
 from collections import OrderedDict
-
-
+from models import MyRaySamples, Frustums
+from nerfstudio.field_components.field_heads import FieldHeadNames
 def batchify(fn, chunk):
     """Constructs a version of 'fn' that applies to smaller batches."""
     if chunk is None:
         return fn
 
     def ret(inputs):
-        return tf.concat([fn(inputs[i:i+chunk]) for i in range(0, inputs.shape[0], chunk)], 0)
+        fields_outputs = [fn(inputs[i:i+chunk]) for i in range(0, inputs.shape[0], chunk)]
+        fields_outputs = [torch.cat([fields_output[FieldHeadNames.RGB], fields_output[FieldHeadNames.DENSITY]], dim=-1) for fields_output in fields_outputs]
+        return torch.cat(fields_outputs, 0)
     return ret
 
 
 def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, embedobj_fn, netchunk=1024*64):
     """Prepares inputs and applies network 'fn'."""
     inputs_flat = torch.reshape(inputs[..., :3], [-1, 3])
-
-    embedded = embed_fn(inputs_flat)
+    
+    # embedded = embed_fn(inputs_flat)
     if inputs.shape[-1] > 3:
         if inputs.shape[-1] == 4:
             # NeRF + T w/o embedding
@@ -40,23 +42,26 @@ def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, embedobj_fn, netch
         else:
             # NeRF + Latent Code
             inputs_latent = torch.reshape(inputs[..., 3:], [inputs_flat.shape[0], -1])
-            embedded = torch.concat([embedded, inputs_latent], -1)
+            embedded = torch.cat([embedded, inputs_latent], -1)
 
     if viewdirs is not None:
-        input_dirs = tf.broadcast_to(viewdirs[:, None, :3], inputs[..., :3].shape)
+        input_dirs = torch.broadcast_to(viewdirs[:, None, :3], inputs[..., :3].shape)
         input_dirs_flat = torch.reshape(input_dirs, [-1, input_dirs.shape[-1]])
-        embedded_dirs = embeddirs_fn(input_dirs_flat)
-        embedded = torch.cat([embedded, embedded_dirs], -1)
+        # embedded_dirs = embeddirs_fn(input_dirs_flat)
+        # embedded = torch.cat([embedded, embedded_dirs], -1)
+        
 
         if viewdirs.shape[-1] > 3:
             # Use global locations of objects
-            input_obj_pose = tf.broadcast_to(viewdirs[:, None, 3:],
-                                             shape=[inputs[..., :3].shape[0], inputs[..., :3].shape[1], 3])
-            input_obj_pose_flat = torch.reshape(input_obj_pose, [-1, input_obj_pose.shape[-1]])
-            embedded_obj = embedobj_fn(input_obj_pose_flat)
-            embedded = torch.cat([embedded, embedded_obj], -1)
-
-    outputs_flat = batchify(fn, netchunk)(embedded)
+            input_obj_pose = torch.broadcast_to(viewdirs[:, None, 3:],
+                                             size=(inputs[..., :3].shape[0], inputs[..., :3].shape[1], 3))
+            input_obj_pose_flat = torch.reshape(input_obj_pose, [-1, input_obj_pose.shape[-1]]) # [N_rays * N_samples, 3]
+            # embedded_obj = embedobj_fn(input_obj_pose_flat)
+            # embedded = torch.cat([embedded, embedded_obj], -1)
+            input_dirs_flat = torch.cat([input_dirs_flat, input_obj_pose_flat], -1)
+    frustums = Frustums(positions=inputs_flat, directions=input_dirs_flat)
+    sample_rays = MyRaySamples(frustums=frustums)
+    outputs_flat = batchify(fn, netchunk)(sample_rays)
     outputs = torch.reshape(outputs_flat, list(
         inputs.shape[:-1]) + [outputs_flat.shape[-1]])
     return outputs
@@ -85,7 +90,9 @@ def render_rays(ray_batch,
                 delta=0.,
                 id_planes=0,
                 verbose=False,
-                obj_location=True):
+                obj_location=True,
+                device=None,
+                train=True):
     """Volumetric rendering.
 
     Args:
@@ -145,7 +152,7 @@ def render_rays(ray_batch,
         """
         # Function for computing density from model prediction. This value is
         # strictly between [0, 1].
-        def raw2alpha(raw, dists, act_fn=torch.nn.ReLU): 
+        def raw2alpha(raw, dists, act_fn=torch.nn.ReLU()): 
             return 1.0 - torch.exp(-act_fn(raw) * dists)
 
         # Compute 'distance' (in time) between each integration time along a ray.
@@ -153,7 +160,7 @@ def render_rays(ray_batch,
 
         # The 'distance' from the last integration time is infinity.
         dists = torch.cat(
-            [dists, torch.broadcast_to([1e10], dists[..., :1].shape)],
+            [dists, torch.broadcast_to(torch.tensor(1e10).to(device), dists[..., :1].shape)],
             dim=-1)  # [N_rays, N_samples]
 
         # Multiply each distance by the norm of its corresponding direction ray
@@ -161,13 +168,13 @@ def render_rays(ray_batch,
         dists = dists * torch.linalg.vector_norm(rays_d[..., None, :], dim=-1)
 
         # Extract RGB of each sample position along each ray.
-        rgb = torch.sigmoid(raw[..., :3])  # [N_rays, N_samples, 3]
+        rgb = raw[..., :3]  # [N_rays, N_samples, 3]
 
         # Add noise to model's predictions for density. Can be used to 
         # regularize network during training (prevents floater artifacts).
         noise = 0.
         if raw_noise_std > 0.:
-            noise = torch.randn(raw[..., 3].shape) * raw_noise_std
+            noise = torch.randn(raw[..., 3].shape).to(device) * raw_noise_std
 
         # Predict density of each sample along each ray. Higher values imply
         # higher likelihood of being absorbed at this point.
@@ -178,16 +185,16 @@ def render_rays(ray_batch,
         # sample yet.
         # [N_rays, N_samples]
         
-        weights = alpha * torch.cumprod(torch.cat([torch.ones((alpha.shape[0], 1)), 1.-alpha + 1e-10], -1), -1)[:, :-1]
+        weights = alpha * torch.cumprod(torch.cat([torch.ones((alpha.shape[0], 1)).to(device), 1.-alpha + 1e-10], -1), -1)[:, :-1]
 
         # Computed weighted color of each sample along each ray.
         rgb_map = torch.sum(weights[...,None] * rgb, -2)  # [N_rays, 3]
         # Estimated depth map is expected distance.
         depth_map = torch.sum(weights * z_vals, -1)
-        disp_map = 1./torch.max(1e-10 * torch.ones_like(depth_map), depth_map /  torch.max(1e-10 , torch.sum(weights, -1)))
+        disp_map = 1./torch.max(1e-10 * torch.ones_like(depth_map), depth_map /  torch.max(torch.tensor(1e-10), torch.sum(weights, -1)))
         acc_map = torch.sum(weights, -1)
         # Disparity map is inverse depth.
-        disp_map = 1./torch.max(1e-10 * torch.ones_like(depth_map), depth_map /  torch.max(1e-10 , torch.sum(weights, -1)))
+        disp_map = 1./torch.max(1e-10 * torch.ones_like(depth_map), depth_map /  torch.max(torch.tensor(1e-10), torch.sum(weights, -1)))
 
         # Sum of weights along each ray. This value is in [0, 1] up to numerical error.
         acc_map = torch.sum(weights, -1)
@@ -340,8 +347,8 @@ def render_rays(ray_batch,
                     return ret
                 else:
                     # TODO: Do not return anything for no intersections.
-                    z_vals_obj_w = torch.zeros([1])
-                    intersection_map = torch.tensor(torch.zeros([1, 3]), torch.int32)
+                    z_vals_obj_w = torch.zeros(1)
+                    intersection_map = (torch.zeros(1).to(dtype=torch.int32), torch.zeros(1).to(dtype=torch.int32))
 
             else:
                 n_intersect = z_vals_in_o.shape[0]
@@ -350,10 +357,10 @@ def render_rays(ray_batch,
                 obj_pose = torch.repeat_interleave(obj_pose[:, None, :], N_samples_obj, dim=1)
                 # Get additional model inputs for intersecting rays
                 if N_samples_obj > 1:
-                    z_vals_box_o = torch.repeat_interleave(torch.linspace(0., 1., N_samples_obj)[None, :], n_intersect, dim=0) * \
+                    z_vals_box_o = torch.repeat_interleave(torch.linspace(0., 1., N_samples_obj)[None, :].to(device), n_intersect, dim=0) * \
                                    (z_vals_out_o - z_vals_in_o)[:, None]
                 else:
-                    z_vals_box_o = torch.repeat_interleave(torch.tensor(1/2)[None,None], n_intersect, dim=0) * \
+                    z_vals_box_o = torch.repeat_interleave(torch.tensor(1/2)[None,None].to(device), n_intersect, dim=0) * \
                                    (z_vals_out_o - z_vals_in_o)[:, None]
 
                 pts_box_samples_o = pts_box_o[:, None, :] + viewdirs_box_o[:, None, :] \
@@ -371,7 +378,7 @@ def render_rays(ray_batch,
 
                 pts_box_samples_w = torch.reshape(pts_box_samples_w, [n_intersect, N_samples_obj, 3])
 
-                z_vals_obj_w = torch.linalg.vector_norm(pts_box_samples_w - rays_o[intersection_map[:, 0, None]][:, None, :], dim=-1)
+                z_vals_obj_w = torch.linalg.vector_norm(pts_box_samples_w - rays_o[intersection_map[0]][:, None, :], dim=-1)
 
                 # else:
                 #     z_vals_obj_w = z_vals_in_w[:, None]
@@ -389,11 +396,11 @@ def render_rays(ray_batch,
 
                 # Extract objects
                 obj_ids = obj_pose[..., 4]
-                object_y, object_idx = torch.unique(torch.reshape(obj_pose[..., 4], [-1]))
+                object_y, object_idx = torch.unique(torch.reshape(obj_pose[..., 4], [-1]), sorted=False, return_inverse=True)
                 # Extract classes
                 obj_class = obj_pose[..., 8]
-                unique_classes = torch.unique(torch.reshape(obj_class, [-1]))
-                class_id = torch.reshape(unique_classes.idx, obj_class.shape)
+                unique_classes = torch.unique(torch.reshape(obj_class, [-1]), sorted=False, return_inverse=True) #TODO check 
+                class_id = torch.reshape(unique_classes[1], obj_class.shape)
 
                 inputs = pts_box_samples_o
 
@@ -441,7 +448,7 @@ def render_rays(ray_batch,
 
         if not obj_only:
             # Run background model
-            raw = torch.zeros([N_rays, N_samples + N_obj*N_samples_obj, 4])
+            raw = torch.zeros([N_rays, N_samples + N_obj*N_samples_obj, 4]).to(device)
             raw_sh = raw.shape
             # Predict RGB and density from background TODO
             raw_bckg = network_query_fn(pts, viewdirs, network_fn)
@@ -457,32 +464,33 @@ def render_rays(ray_batch,
                 for k, track_id in enumerate(object_y):
                     if track_id >= 0:
                         input_indices = torch.where(obj_id == k)
-                        input_indices = torch.reshape(input_indices, [-1, N_samples_obj, 2])
-                        model_name = 'model_obj_' + str(np.array(track_id).astype(np.int32))
+                        input_indices = (torch.reshape(input_indices[0], [-1, N_samples_obj]), torch.reshape(input_indices[1], [-1, N_samples_obj]))
+                        model_name = 'model_obj_' + str(np.array(track_id.item()).astype(np.int32))
                         # print('Hit', model_name, n_intersect, 'times.')
                         if model_name in object_network_fn_dict:
                             obj_network_fn = object_network_fn_dict[model_name]
 
                             inputs_obj_k = inputs[input_indices]
-                            viewdirs_obj_k = viewdirs_obj[input_indices[..., None, 0]] if N_samples_obj == 1 else \
-                                viewdirs_obj[input_indices[..., 0, 0]] #TODO　違うかも
+                            viewdirs_obj_k = viewdirs_obj[input_indices[0]] if N_samples_obj == 1 else \
+                                viewdirs_obj[input_indices[0][:,0]] #TODO　違うかも
 
                             # Predict RGB and density from object model
                             raw_k = network_query_fn(inputs_obj_k, viewdirs_obj_k, obj_network_fn)
 
                             if n_intersect is not None:
+                                #TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO check
                                 # Arrange RGB and denisty from object models along the respective rays
-                                tmp_raw_k = torch.zeros([n_intersect, N_samples_obj, 4])
-                                tmp_raw_k[input_indices[:, :]] = raw_k # Project the network outputs to the corresponding ray
+                                tmp_raw_k = torch.zeros([n_intersect, N_samples_obj, 4]).to(device)
+                                tmp_raw_k[input_indices] = raw_k # Project the network outputs to the corresponding ray 
                                 raw_k = tmp_raw_k
-                                tmp_raw_k = torch.zeros([N_rays, N_obj, N_samples_obj, 4])
-                                tmp_raw_k[intersection_map[:, :2]] = raw_k # Project to rays and object intersection order
+                                tmp_raw_k = torch.zeros([N_rays, N_obj, N_samples_obj, 4]).to(device)
+                                tmp_raw_k[intersection_map] = raw_k # Project to rays and object intersection order
                                 raw_k = tmp_raw_k
-                                tmp_raw_k = torch.zeros(raw_sh)
+                                tmp_raw_k = torch.zeros(raw_sh).to(device)
                                 tmp_raw_k[id_z_vals_obj] = raw_k # Reorder along z and ray
                                 raw_k = tmp_raw_k
                             else:
-                                tmp_raw_k = torch.zeros([N_rays, N_samples, 4])
+                                tmp_raw_k = torch.zeros([N_rays, N_samples, 4]).to(device)
                                 tmp_raw_k[input_indices[:, 0][..., None]] = raw_k
                                 raw_k = tmp_raw_k
 
@@ -568,7 +576,7 @@ def render_rays(ray_batch,
 
         # Make predictions with network_fine.
         if use_time:
-            pts = tf.concat([pts, time_stamp_fine], axis=-1)
+            pts = torch.cat([pts, time_stamp_fine], dim=-1)
 
         run_fn = network_fn if network_fine is None else network_fine
         raw = network_query_fn(pts, viewdirs, run_fn)
@@ -597,13 +605,18 @@ def render_rays(ray_batch,
 def batchify_rays(rays_flat, chunk=1024*32, **kwargs):
     """Render rays in smaller minibatches to avoid OOM."""
     all_ret = {}
+    device = kwargs['device']
     for i in range(0, rays_flat.shape[0], chunk):
-        ret = render_rays(rays_flat[i:i+chunk], **kwargs)
-        for k in ret:
+        ret = render_rays(rays_flat[i:i+chunk], **kwargs) #TODO render and train
+        for k in ret: 
             if k not in all_ret:
                 all_ret[k] = []
-            all_ret[k].append(ret[k])
+            if kwargs["train"]:
+                all_ret[k].append(ret[k])
+            else:
+                all_ret[k].append(ret[k].cpu())
 
+            
     all_ret = {k: torch.cat(all_ret[k], 0) for k in all_ret}
     return all_ret
 
@@ -647,13 +660,15 @@ def render(H,
       acc_map: [batch_size]. Accumulated opacity (alpha) along a ray.
       extras: dict with everything returned by render_rays().
     """
-
+    device = kwargs['device']
     if c2w is not None:
         # special case to render full image
         # rays = tf.random.shuffle(tf.concat([get_rays(H, W, focal, c2w)[0], get_rays(H, W, focal, c2w)[1]], axis=-1))
         # rays_o = rays[..., :3]
         # rays_d = rays[..., 3:]
         rays_o, rays_d = get_rays(H, W, focal, c2w)
+        rays_o = rays_o.to(device)
+        rays_d = rays_d.to(device)
         if obj is not None:
             obj = torch.repeat_interleave(obj[None, ...], H*W, dim=0)
         if time_stamp is not None:
@@ -672,15 +687,15 @@ def render(H,
         # Make all directions unit magnitude.
         # shape: [batch_size, 3]
         viewdirs = viewdirs / torch.linalg.vector_norm(viewdirs, dim=-1, keepdims=True)
-        viewdirs = torch.tensor(torch.reshape(viewdirs, [-1, 3]), dtype=torch.float32)
+        viewdirs = torch.reshape(viewdirs, [-1, 3]).to(torch.float32)
 
     sh = rays_d.shape  # [..., 3]
 
     # Create ray batch
-    rays_o = torch.tensor(torch.reshape(rays_o, [-1, 3]), dtype=torch.float32)
-    rays_d = torch.tensor(torch.reshape(rays_d, [-1, 3]), dtype=torch.float32)
+    rays_o = torch.reshape(rays_o, [-1, 3]).to(torch.float32)
+    rays_d = torch.reshape(rays_d, [-1, 3]).to(torch.float32)
     near, far = near * \
-        torch.ones_like(rays_d[..., :1]), far * torch.ones_like(rays_d[..., :1])
+        torch.ones_like(rays_d[..., :1]).to(device), far * torch.ones_like(rays_d[..., :1]).to(device)
 
     # (ray origin, ray direction, min dist, max dist) for each ray
     rays = torch.cat([rays_o, rays_d, near, far], dim=-1)
@@ -720,7 +735,7 @@ def render_path(render_poses, hwf, chunk, render_kwargs, obj=None, obj_meta=None
         # Render downsampled for speed
         H = H//render_factor
         W = W//render_factor
-        focal = focal/render_factor
+        focal = focal/render_factorobj_nodes
 
     rgbs = []
     disps = []
@@ -770,7 +785,7 @@ def render_path(render_poses, hwf, chunk, render_kwargs, obj=None, obj_meta=None
                     loaded_objs = np.loadtxt(os.path.join(savedir, str(i).zfill(3) + '.txt'))[:, :6]
                     loaded_objs[:, 5] = 0
                     loaded_objs[:, 4] = np.array([np.where(np.equal(obj_meta[:, 0], loaded_objs[j, 4])) for j in range(len(loaded_objs))])[:, 0, 0]
-                    loaded_objs = tf.cast(loaded_objs, tf.float32)
+                    loaded_objs = torch.tensor(loaded_objs, dtype=torch.float32)
                     loaded_obj_i.append(loaded_objs)
                     render_set.append(loaded_obj_i)
                 if '02' in render_manipulation:
@@ -789,13 +804,12 @@ def render_path(render_poses, hwf, chunk, render_kwargs, obj=None, obj_meta=None
                 obj_i = render_set_i[0]
 
                 if obj_meta is not None:
-                    obj_i_metadata = tf.gather(obj_meta, tf.cast(obj_i[:, 4], tf.int32),
-                                               axis=0)
+                    obj_i_metadata = obj_meta[torch.tensor(obj_i[:, 4], dtype=torch.int32)]
                     batch_track_id = obj_i_metadata[..., 0]
 
                     print("Next Frame includes Objects: ")
                     if batch_track_id.shape[0] > 1:
-                        for object_tracking_id in np.array(tf.squeeze(batch_track_id)).astype(np.int32):
+                        for object_tracking_id in np.array(torch.squeeze(batch_track_id)).astype(np.int32):
                             if object_tracking_id >= 0:
                                 print(object_tracking_id)
 
@@ -804,7 +818,7 @@ def render_path(render_poses, hwf, chunk, render_kwargs, obj=None, obj_meta=None
                     # xyz + roty
                     obj_i = obj_i[..., :4]
 
-                    obj_i = tf.concat([obj_i, batch_track_id[..., None], obj_i_dim, obj_i_label], axis=-1)
+                    obj_i = torch.cat([obj_i, batch_track_id[..., None], obj_i_dim, obj_i_label], dim=-1)
 
                 # obj_i = np.array(obj_i)
                 # rm_ls_0 = [0, 1, 2,]
@@ -844,49 +858,54 @@ def render_path(render_poses, hwf, chunk, render_kwargs, obj=None, obj_meta=None
     return rgbs, disps
 
 
-def create_nerf(args):
+def create_nerf(args, device):
     """Instantiate NeRF's MLP model."""
     if args.obj_detection:
         trainable = False
     else:
         trainable = True
 
-    embed_fn, input_ch = get_embedder(args.multires, args.i_embed)
+    pos_enc, input_ch = get_embedder(args.multires, args.i_embed)
+    pos_enc.to(device)
 
     if args.use_time:
         input_ch += 1
 
     input_ch_views = 0
-    embeddirs_fn = None
+    dir_enc = None
     if args.use_viewdirs:
-        embeddirs_fn, input_ch_views = get_embedder(
+        dir_enc, input_ch_views = get_embedder(
             args.multires_views, args.i_embed)
+        dir_enc.to(device)
     output_ch = 4
-    skips = [4]
+    skips = (4,)   
     model = init_nerf_model(
-        D=args.netdepth, W=args.netwidth,
-        input_ch=input_ch, output_ch=output_ch, skips=skips,
-        input_ch_color_head=input_ch_views, use_viewdirs=args.use_viewdirs, trainable=trainable)
-    models = {'model': model}
+        pos_enc=pos_enc, dir_enc=dir_enc,
+        base_mlp_num_layers=args.netdepth, base_mlp_layer_width=args.netwidth,
+        head_mlp_num_layers=args.netdepth//2, head_mlp_layer_width=args.netwidth//2, skips=skips,
+        trainable=trainable)
+    models = {'model': model.to(device)}
     grad_vars = list(model.parameters())
 
     model_fine = None
     if args.N_importance > 0:
         model_fine = init_nerf_model(
-            D=args.netdepth_fine, W=args.netwidth_fine,
-            input_ch=input_ch, output_ch=output_ch, skips=skips,
-            input_ch_color_head=input_ch_views, use_viewdirs=args.use_viewdirs, trainable=trainable)
+        pos_enc=pos_enc, dir_enc=dir_enc,
+        base_mlp_num_layers=args.netdepth, base_mlp_layer_width=args.netwidth,
+        head_mlp_num_layers=args.netdepth//2, head_mlp_layer_width=args.netwidth//2, skips=skips,
+        trainable=trainable)
         grad_vars += list(model.parameters())
-        models['model_fine'] = model_fine
+        models['model_fine'] = model_fine.to(device)
 
     models_dynamic_dict = None
-    embedobj_fn = None
+    obj_dir_enc = None
     latent_vector_dict = None if args.latent_size < 1 else {}
     latent_encodings = None if args.latent_size < 1 else {}
     if args.use_object_properties and not args.bckg_only:
         models_dynamic_dict = {}
-        embedobj_fn, input_ch_obj = get_embedder(
-            args.multires_obj, -1 if args.multires_obj == -1 else args.i_embed, input_dims=3)
+        obj_dir_enc, input_ch_obj = get_embedder(
+            args.multires_obj, -1 if args.multires_obj == -1 else args.i_embed, input_dims=6)
+        obj_dir_enc.to(device)
 
         # Version a: One Network per object
         if args.latent_size < 1:
@@ -901,14 +920,15 @@ def create_nerf(args):
                 model_name = 'model_obj_' + str(int(object_i)) # .zfill(5)
 
                 model_obj = init_nerf_model(
-                    D=args.netdepth_fine, W=args.netwidth_fine,
-                    input_ch=input_ch, output_ch=output_ch, skips=skips,
-                    input_ch_color_head=input_ch_color_head, use_viewdirs=args.use_viewdirs,trainable=trainable)
+                    pos_enc=pos_enc, dir_enc=obj_dir_enc,
+                    base_mlp_num_layers=args.netdepth, base_mlp_layer_width=args.netwidth,
+                    head_mlp_num_layers=args.netdepth//2, head_mlp_layer_width=args.netwidth//2, skips=skips,
+                    trainable=trainable)
                     # latent_size=args.latent_size)
 
                 grad_vars += list(model_obj.parameters())
-                models[model_name] = model_obj
-                models_dynamic_dict[model_name] = model_obj
+                models[model_name] = model_obj.to(device)
+                models_dynamic_dict[model_name] = model_obj.to(device)
 
         # Version b: One Network for all similar objects of the same class
         else:
@@ -931,23 +951,23 @@ def create_nerf(args):
                     # latent_size=args.latent_size)
 
                 grad_vars += list(model_obj.parameters())
-                models[model_name] = model_obj
-                models_dynamic_dict[model_name] = model_obj
+                models[model_name] = model_obj.to(device)
+                models_dynamic_dict[model_name] = model_obj.to(device)
 
             for object_i in args.scene_objects:
                 name = 'latent_vector_obj_'+str(int(object_i)).zfill(5)
                 latent_vector_obj = init_latent_vector(args.latent_size, name)
                 grad_vars.append(latent_vector_obj)
 
-                latent_encodings[name] = latent_vector_obj
-                latent_vector_dict[name] = latent_vector_obj
+                latent_encodings[name] = latent_vector_obj.to(device)
+                latent_vector_dict[name] = latent_vector_obj.to(device)
 
     # TODO: Remove object embedding function
     def network_query_fn(inputs, viewdirs, network_fn): return run_network(
         inputs, viewdirs, network_fn,
-        embed_fn=embed_fn,
-        embeddirs_fn=embeddirs_fn,
-        embedobj_fn=embedobj_fn,
+        embed_fn=pos_enc,
+        embeddirs_fn=dir_enc,
+        embedobj_fn=obj_dir_enc,
         netchunk=args.netchunk)
 
     render_kwargs_train = {
@@ -969,12 +989,15 @@ def create_nerf(args):
         'sampling_method': args.sampling_method,
         'use_time': args.use_time,
         'obj_location': False if args.object_setting == 1 else True,
+        'device': device,
+        "train": True,
     }
 
     render_kwargs_test = {
         k: render_kwargs_train[k] for k in render_kwargs_train}
     render_kwargs_test['perturb'] = False
     render_kwargs_test['raw_noise_std'] = 0.
+    render_kwargs_test["train"] = False
     # render_kwargs_test['obj_only'] = False
 
     start = 0
@@ -996,13 +1019,13 @@ def create_nerf(args):
         ckpts = [os.path.join(basedir, expname, f) for f in sorted(os.listdir(os.path.join(basedir, expname))) if
                  ('_obj_' in f)]
     else:
-        ckpts = [os.path.join(basedir, expname, f) for f in sorted(os.listdir(os.path.join(basedir, expname))) if
+        ckpts = [os.path.join(basedir, expname, "models", f) for f in sorted(os.listdir(os.path.join(basedir, expname, "models"))) if
                  ('model_' in f and 'fine' not in f and 'optimizer' not in f and 'obj' not in f and 'class' not in f)]
     print('Found ckpts', ckpts)
     if len(ckpts) > 0 and not args.no_reload and (not args.obj_only or args.model_library):
         ft_weights = ckpts[-1]
         print('Reloading from', ft_weights)
-        model.set_weights(np.load(ft_weights, allow_pickle=True))
+        model.load_state_dict(torch.load(ft_weights))
         start = int(ft_weights[-10:-4]) + 1
         print('Resetting step to', start)
 
@@ -1010,8 +1033,7 @@ def create_nerf(args):
             ft_weights_fine = '{}_fine_{}'.format(
                 ft_weights[:-11], ft_weights[-10:])
             print('Reloading fine from', ft_weights_fine)
-            model_fine.set_weights(np.load(ft_weights_fine, allow_pickle=True))
-
+            model_fine.load_state_dict(torch.load(ft_weights_fine))
         if models_dynamic_dict is not None:
             for model_dyn_name, model_dyn in models_dynamic_dict.items():
                 if args.model_library:
@@ -1020,14 +1042,14 @@ def create_nerf(args):
                     ft_weights_obj = '{}'.format(ft_weights[:-16]) + \
                                      model_dyn_name + '_{}'.format(ft_weights[-10:])
                 print('Reloading model from', ft_weights_obj, 'for', model_dyn_name[6:])
-                model_dyn.set_weights(np.load(ft_weights_obj, allow_pickle=True))
+                model_dyn.load_state_dict(torch.load(ft_weights_obj))
 
         if latent_vector_dict is not None:
             for latent_vector_name, latent_vector in latent_vector_dict.items():
                 ft_weights_obj = '{}'.format(ft_weights[:-16]) + \
                                      latent_vector_name + '_{}'.format(ft_weights[-10:])
                 print('Reloading objects latent vector from', ft_weights_obj)
-                latent_vector.assign(np.load(ft_weights_obj, allow_pickle=True))
+                latent_vector.load_state_dict(torch.load(ft_weights_obj))
 
     elif len(ckpts) > 0 and args.obj_only:
         ft_weights = ckpts[-1]
@@ -1036,13 +1058,13 @@ def create_nerf(args):
         for model_dyn_name, model_dyn in models_dynamic_dict.items():
             ft_weights_obj = os.path.join(ft_weights_obj_dir, model_dyn_name + '_{}'.format(ft_weights[-10:]))
             print('Reloading model from', ft_weights_obj, 'for', model_dyn_name[6:])
-            model_dyn.set_weights(np.load(ft_weights_obj, allow_pickle=True))
+            model_dyn.load_state_dict(torch.load(ft_weights_obj))
 
         if latent_vector_dict is not None:
             for latent_vector_name, latent_vector in latent_vector_dict.items():
                 ft_weights_obj = os.path.join(ft_weights_obj_dir, latent_vector_name + '_{}'.format(ft_weights[-10:]))
                 print('Reloading objects latent vector from', ft_weights_obj)
-                latent_vector.assign(np.load(ft_weights_obj, allow_pickle=True))
+                latent_vector.load_state_dict(torch.load(ft_weights_obj))
 
         weights_path = ft_weights
 
@@ -1055,7 +1077,11 @@ def train():
     from config_parser import config_parser
     parser = config_parser()
     args = parser.parse_args()
-    
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+    else:
+        device = torch.device('cpu')
+
     if args.random_seed is not None:
         print('Fixing random seed', args.random_seed)
         np.random.seed(args.random_seed)
@@ -1223,7 +1249,7 @@ def train():
         # Prepare object nodes [n_images, n_objects, H, W, add_input_rows, 3]
         obj_nodes = np.reshape(obj_nodes, [n_input_frames, args.max_input_objects * add_input_rows, 3])
 
-        obj_meta_tensor = torch.tensor(np.array(obj_meta_tensor), dtype=torch.float32)
+        obj_meta_tensor = torch.tensor(np.array(obj_meta_ls), dtype=torch.float32)
 
         if args.render_test:
             render_objects = obj_nodes[i_test]
@@ -1231,7 +1257,9 @@ def train():
     # Create log dir and copy the config file
     basedir = args.basedir
     expname = args.expname
+    model_log_dir = os.path.join(basedir, expname, "models")
     os.makedirs(os.path.join(basedir, expname), exist_ok=True)
+    os.makedirs(model_log_dir, exist_ok=True)
     f = os.path.join(basedir, expname, 'args.txt')
     with open(f, 'w') as file:
         for arg in sorted(vars(args)):
@@ -1244,7 +1272,7 @@ def train():
 
     # Create nerf representation models
     render_kwargs_train, render_kwargs_test, start, grad_vars, models, latent_encodings, weights_path = create_nerf(
-        args)
+        args, device)
 
     if args.obj_only:
         print('removed bckg model for obj training')
@@ -1257,8 +1285,8 @@ def train():
     # Set bounds for point sampling along a ray
     if not args.sampling_method == 'planes' and not args.sampling_method == 'planes_plus':
         bds_dict = {
-            'near': torch.tensor(near, torch.float32),
-            'far': torch.tensor(far, torch.float32),
+            'near': torch.tensor(near, dtype=torch.float32).to(device),
+            'far': torch.tensor(far, dtype=torch.float32).to(device),
         }
     else:
         # TODO: Generalize for non front-facing scenarios
@@ -1267,12 +1295,12 @@ def train():
 
         # planes = [plane_origin, plane_normal]
         bds_dict = {
-            'near': torch.tensor(near, torch.float32),
-            'far': torch.tensor(far, torch.float32),
-            'plane_bds': torch.tensor(plane_bds, torch.float32),
-            'plane_normal': torch.tensor(plane_normal, torch.float32),
-            'id_planes': torch.tensor(id_planes, torch.float32),
-            'delta': torch.tensor(plane_delta, torch.float32)
+            'near': torch.tensor(near, dtype=torch.float32).to(device),
+            'far': torch.tensor(far, dtype=torch.float32).to(device),
+            'plane_bds': torch.tensor(plane_bds, dtype=torch.float32).to(device),
+            'plane_normal': torch.tensor(plane_normal, dtype=torch.float32).to(device),
+            'id_planes': torch.tensor(id_planes, dtype=torch.float32).to(device),
+            'delta': torch.tensor(plane_delta, dtype=torch.float32).to(device)
         }
     render_kwargs_train.update(bds_dict)
     render_kwargs_test.update(bds_dict)
@@ -1297,13 +1325,13 @@ def train():
 
         # Select random from render_poses
         render_poses = render_poses[np.random.randint(0, len(render_poses) - 1, np.minimum(3, len(render_poses)))]
-
-        rgbs, _ = render_path(render_poses, hwf, args.chunk, render_kwargs_test,
-                              obj=obj_nodes if args.use_object_properties and not args.bckg_only else None,
-                              obj_meta=obj_meta_tensor if args.use_object_properties else None,
-                              gt_imgs=images, savedir=testsavedir, render_factor=args.render_factor,
-                              render_manipulation=args.manipulate, rm_obj=args.remove_obj,
-                              time_stamp=render_time_stamp)
+        with torch.no_grad():
+            rgbs, _ = render_path(render_poses, hwf, args.chunk, render_kwargs_test,
+                                obj=obj_nodes if args.use_object_properties and not args.bckg_only else None,
+                                obj_meta=obj_meta_tensor if args.use_object_properties else None,
+                                gt_imgs=images, savedir=testsavedir, render_factor=args.render_factor,
+                                render_manipulation=args.manipulate, rm_obj=args.remove_obj,
+                                time_stamp=render_time_stamp)
         print('Done rendering', testsavedir)
         if args.dataset_type == 'vkitti':
             rgbs = rgbs[:, 1:, ...]
@@ -1412,10 +1440,10 @@ def train():
                                                                              obj_to_remove=args.remove_obj)
 
             # Create Masks for background and objects to subsample the training batches
-            obj_mask = np.zeros(len(rays_rgb), np.bool)
+            obj_mask = np.zeros(len(rays_rgb), bool)
             obj_mask[rays_on_obj] = 1
 
-            bckg_mask = np.ones(len(rays_rgb), np.bool)
+            bckg_mask = np.ones(len(rays_rgb), bool)
             bckg_mask[rays_on_obj] = 0
 
             # Remove predefined objects from the scene
@@ -1475,8 +1503,9 @@ def train():
             # Get Intersections per object and additional rays to have similar rays/object distributions VVVVV
             if not args.bckg_only:
                 # # print(rays_rgb.shape)
-                rays_rgb = resample_rays(rays_rgb, rays_bckg, obj_meta_tensor, objects_meta,
-                                         args.scene_objects, scene_classes, args.chunk, local=args.debug_local)
+                with torch.no_grad(): # TODO 必要？
+                    rays_rgb = resample_rays(rays_rgb, rays_bckg, obj_meta_tensor, objects_meta,
+                                            args.scene_objects, scene_classes, args.chunk, local=args.debug_local)
             # Get Intersections per object and additional rays to have similar rays/object distributions AAAAA
 
     print('shuffle rays')
@@ -1491,7 +1520,7 @@ def train():
     print('VAL views are', i_val)
 
     # Summary writers
-    logger = Logger(os.path.join(basedir, 'summaries', expname), global_step=global_step)
+    logger = Logger(os.path.join(basedir, 'summaries', expname), model_log_dir, global_step=global_step)
     for i in range(start, N_iters):
         time0 = time.time()
 
@@ -1514,7 +1543,9 @@ def train():
                 i_batch = 0
 
         batch = rays_rgb[i_batch:i_batch + N_rand]  # [B, 2+1+max_obj, 3*?]
-        batch = torch.transpose(batch, [1, 0, 2])
+        batch = np.transpose(batch, [1, 0, 2]) # [2+1+max_obj, B, 3*?]
+        batch = torch.tensor(batch).to(device)
+        obj_meta_tensor = obj_meta_tensor.to(device)
 
         # batch_rays[i, n, xyz] = ray origin or direction, example_id, 3D position
         # target_s[n, rgb] = example_id, observed color.
@@ -1527,8 +1558,8 @@ def train():
 
         if args.use_object_properties:
             # batch_obj[N_rand, max_obj, properties+0]
-            batch_obj_dyn = torch.reshape(torch.transpose(
-                batch_dyn, [1, 0, 2]), [batch.get_shape()[1], args.max_input_objects, add_input_rows*3])
+            batch_obj_dyn = torch.reshape(torch.permute(
+                batch_dyn, (1, 0, 2)), [batch.shape[1], args.max_input_objects, add_input_rows*3])
 
 
             # xyz + roty
@@ -1536,7 +1567,7 @@ def train():
 
             # [N_rand, max_obj, trackID + label + model + color + Dimension]
             # Extract static nodes and edges (latent node, id, box size) for each object at each ray
-            batch_obj_metadata = obj_meta_tensor[torch.tensor(batch_obj_dyn[:, :, 4], torch.int32)]
+            batch_obj_metadata = obj_meta_tensor[batch_obj_dyn[:, :, 4].to(torch.int32)]
             batch_track_id = batch_obj_metadata[:, :, 0]
             # TODO: For generalization later Give track ID in the beginning and change model name to track ID 意味がわからない何をしている
             batch_obj = torch.cat([batch_obj, batch_track_id[..., None]], dim=-1)
@@ -1590,38 +1621,39 @@ def train():
         scalar_logs = OrderedDict()
         histogram_logs = OrderedDict()
         image_logs = OrderedDict()
-        if i % args.i_weights == 0:
+        if logger.should_record(args.i_weights):
             logger.save_weights(models, i)
 
-        if logger.should_record(args.i_print) or i < 10:
-            print(expname, i, psnr.numpy(), loss.numpy(), global_step.numpy())
+        if i < 10 or logger.should_record(args.i_print):
+            print("\n##############################################")
+            print(f"expname: {expname}")
+            print(f"global step: {logger.global_step}")
             print('iter time {:.05f}'.format(dt))
             if logger.should_record(args.i_print):
                 scalar_logs.update({
-                    "loss": loss,
-                    "psnr": psnr,
+                    "loss": loss.item(),
+                    "psnr": psnr.item(),
                 })
-
                 if args.latent_size > 0:
                     for latent_vector_sum in list(render_kwargs_train['latent_vector_dict'].values()):
                         histogram_logs.update({
                             latent_vector_sum.name: latent_vector_sum.value(),
                         })
 
-            if logger.should_record(args.i_img) == 0 and not i == 0: # and not args.debug_local:
-
+            if logger.should_record(args.i_img) and not i == 0: # and not args.debug_local:
+                print("\n##############################################")
                 # Log a rendered validation view to Tensorboard
                 img_i = np.random.choice(i_val)
-                target = images[img_i]
+                target = torch.tensor(images[img_i])
                 pose = poses[img_i, :3, :4]
                 time_st = time_stamp[img_i] if args.use_time else None
 
                 if args.use_object_properties:
                     obj_i = obj_nodes[img_i, :, 0, 0, ...]
-                    obj_i = torch.tensor(obj_i, torch.float32)
+                    obj_i = torch.tensor(obj_i, dtype=torch.float32).to(device)
                     obj_i = torch.reshape(obj_i, [args.max_input_objects, obj_i.shape[0] // args.max_input_objects * 3])
-
-                    obj_i_metadata = obj_meta_tensor[torch.tensor(obj_i[:, 4], torch.int32)]
+                    indices = obj_i[:, 4].clone().detach().to(torch.int32)
+                    obj_i_metadata = obj_meta_tensor[indices]
                     batch_track_id = obj_i_metadata[..., 0]
                     obj_i_dim = obj_i_metadata[:, 1:4]
                     obj_i_label = obj_i_metadata[:, 4][:, None]
@@ -1629,37 +1661,43 @@ def train():
                     # xyz + roty
                     obj_i = obj_i[..., :4]
                     obj_i = torch.cat([obj_i, batch_track_id[..., None], obj_i_dim, obj_i_label], dim=-1)
-
-                    rgb, disp, acc, extras = render(H, W, focal, chunk=args.chunk, c2w=pose, obj=obj_i,
-                                                    **render_kwargs_test)
+                    with torch.no_grad():
+                        rgb, disp, acc, extras = render(H, W, focal, chunk=args.chunk, c2w=pose, obj=obj_i,
+                                                        **render_kwargs_test)
                 else:
-                    rgb, disp, acc, extras = render(H, W, focal, chunk=args.chunk, c2w=pose, time_stamp=time_st,
-                                                    **render_kwargs_test)
+                    with torch.no_grad():
+                        rgb, disp, acc, extras = render(H, W, focal, chunk=args.chunk, c2w=pose, time_stamp=time_st,
+                                                        **render_kwargs_test)
 
                 psnr = mse2psnr(img2mse(rgb, target))
-                
+
                 # Save out the validation image for Tensorboard-free monitoring
                 testimgdir = os.path.join(basedir, expname, 'tboard_val_imgs')
                 if i==0 or not os.path.exists(testimgdir):
                     os.makedirs(testimgdir, exist_ok=True)
-                imageio.imwrite(os.path.join(testimgdir, '{:06d}.png'.format(i)), to8b(rgb))
+                # imageio.imwrite(os.path.join(testimgdir, '{:06d}.png'.format(i)), to8b(rgb))
 
                 if logger.should_record(args.i_img):
-
-                    image_logs.update({'rgb':to8b(rgb)[None]})
-                    image_logs.update({'disp':disp[None, ..., None]})
-                    image_logs.update({'acc': acc[None, ..., None]})
-
-                    scalar_logs.update({'psnr_holdout': psnr})
-                    image_logs.update({'rgb_holdout':target[None]})
+                    image_logs.update({
+                        'rgb':to8b(rgb)[None],
+                        'disp':to8b(disp[None, ..., None]),
+                        'acc': to8b(acc[None, ..., None]),
+                        'rgb_holdout':target[None],
+                        })
+                    scalar_logs.update({'psnr_holdout': psnr.item()})
 
                 if args.N_importance > 0:
 
                     if logger.should_record(args.i_img):
-                        image_logs.update({'rgb0': to8b(extras['rgb0'])[None]})
-                        image_logs.update({'disp0': extras['disp0'][None, ..., None]})
-                        image_logs.update({'z_std': extras['z_std'][None, ..., None]})
-
+                        image_logs.update({
+                            'rgb0': to8b(extras['rgb0'])[None],
+                            'disp0': extras['disp0'][None, ..., None],
+                            'z_std': extras['z_std'][None, ..., None],
+                            })
+        logger.add_scalars(scalar_logs)
+        logger.add_histograms(histogram_logs)
+        logger.add_images(image_logs)
+        logger.flush()
         logger.add_global_step()
 
 
