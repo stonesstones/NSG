@@ -1631,8 +1631,8 @@ def train():
             print('iter time {:.05f}'.format(dt))
             if logger.should_record(args.i_print):
                 scalar_logs.update({
-                    "loss": loss.item(),
-                    "psnr": psnr.item(),
+                    "train_loss": loss.item(),
+                    "train_psnr": psnr.item(),
                 })
                 if args.latent_size > 0:
                     for latent_vector_sum in list(render_kwargs_train['latent_vector_dict'].values()):
@@ -1679,10 +1679,10 @@ def train():
 
                 if logger.should_record(args.i_img):
                     image_logs.update({
-                        'rgb':to8b(rgb)[None],
-                        'disp':to8b(disp[None, ..., None]),
-                        'acc': to8b(acc[None, ..., None]),
-                        'rgb_holdout':target[None],
+                        'eval_rgb':to8b(rgb)[None],
+                        'eval_disp':to8b(disp[None, ..., None]),
+                        'eval_acc': to8b(acc[None, ..., None]),
+                        'eval_rgb_holdout':target[None],
                         })
                     scalar_logs.update({'psnr_holdout': psnr.item()})
 
@@ -1690,9 +1690,9 @@ def train():
 
                     if logger.should_record(args.i_img):
                         image_logs.update({
-                            'rgb0': to8b(extras['rgb0'])[None],
-                            'disp0': extras['disp0'][None, ..., None],
-                            'z_std': extras['z_std'][None, ..., None],
+                            'eval_rgb0': to8b(extras['rgb0'])[None],
+                            'eval_disp0': extras['disp0'][None, ..., None],
+                            'eval_z_std': extras['z_std'][None, ..., None],
                             })
         logger.add_scalars(scalar_logs)
         logger.add_histograms(histogram_logs)
