@@ -1,3 +1,4 @@
+SINGULARITY_TMPDIR=$SSG_LOCALDIR singularity build --fakeroot nsg.sif nsg.def
 # Neural Scene Graphs for Dynamic Scene (CVPR 2021)
 
 ![alt text](https://light.princeton.edu/wp-content/uploads/2021/02/scene_graph_isometric_small.png)

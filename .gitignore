@@ -27,3 +27,8 @@ work/
 log4txt
 .venv
 dataset
+recipe
+docker/nerfstudio2.sif
+docker/test.txt
+docker/nsg.def
+.log/log_train_kitti.txt

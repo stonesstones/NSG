@@ -166,7 +166,7 @@ def get_obj_pose_tracking(tracklet_path, poses_imu_tracking, calibrations, selec
         if len(all_obj_poses[0]) > 0 and values[4] != 4.:
             frame_intervall = all_obj_poses[0][[0, -1]]
             y = all_obj_poses[1][[0, -1]]
-            obj_poses = visible_objects[[frame_intervall, y]][:, 7:10]
+            obj_poses = visible_objects[(frame_intervall, y)][:, 7:10]
             distance = np.linalg.norm(obj_poses[1] - obj_poses[0])
             print(distance)
             if distance < 0.5:
