@@ -266,7 +266,7 @@ def world2object(pts, dirs, pose, theta_y, dim=None, inverse=False):
     """
     device = pts.device
     #  Prepare args if just one sample per ray-object or world frame only
-    if len(pts.shape) == 3: #TODO あとで
+    if len(pts.shape) == 3:
         # [batch_rays, n_obj, samples, xyz]
         n_sample_per_ray = pts.shape[1]
 
@@ -283,7 +283,7 @@ def world2object(pts, dirs, pose, theta_y, dim=None, inverse=False):
     y_shift = (torch.tensor([0., -1., 0.], dtype=torch.float32)[None, :].to(device) if inverse else
                torch.tensor([0., -1., 0.], dtype=torch.float32)[None, None, :]).to(device) * \
               (dim[..., 1] / 2)[..., None]
-    pose_w = pose + y_shift
+    pose_w = pose + y_shift #objectの中心座標(in world frame)
 
     # Describes the origin of the world system w in the object system o
     t_w_o = rotate_yaw(-pose_w, theta_y)
@@ -294,8 +294,8 @@ def world2object(pts, dirs, pose, theta_y, dim=None, inverse=False):
         dirs_w = torch.repeat_interleave(dirs[:, None, ...], N_obj, dim=1)
 
         # Rotate coordinate axis
-        # TODO: Generalize for 3d roaations
-        pts_o = rotate_yaw(pts_w, theta_y) + t_w_o
+        # TODO: Generalize for 3d rotations
+        pts_o = rotate_yaw(pts_w, theta_y) + t_w_o #objectの中心座標(in object frame)
         dirs_o = rotate_yaw(dirs_w, theta_y)
 
         # Scale rays_o_v and rays_d_v for box [[-1.,1], [-1.,1], [-1.,1]]
@@ -420,9 +420,9 @@ def ray_box_intersection(ray_o, ray_d, aabb_min=None, aabb_max=None):
     t_near = torch.maximum(torch.maximum(t0[..., 0], t0[..., 1]), t0[..., 2])
     t_far = torch.minimum(torch.minimum(t1[..., 0], t1[..., 1]), t1[..., 2])
 
-    # Check if rays are inside boxes TODO　あってるかわからない
+    # Check if rays are inside boxes
     intersection_map = torch.where(t_far > t_near)
-    # Check that boxes are in front of the ray origin TODO　あってるかわからない
+    # Check that boxes are in front of the ray origin
     positive_far = torch.where(t_far[intersection_map] > 0)
     intersection_map = (intersection_map[0][positive_far[0]], intersection_map[1][positive_far[0]])
 
@@ -440,7 +440,7 @@ def box_pts(rays, pose, theta_y, dim=None, one_intersec_per_ray=False):
 
     Args:
         rays: ray origins and directions, [[N_rays, 3], [N_rays, 3]]
-        pose: object positions in world frame for each ray, [N_rays, N_obj, 3]
+        pose: object positions in world frame for each ray, [N_rays, N_obj, 3](ray_o_o_in_w)
         theta_y: rotation of objects around world y axis, [N_rays, N_obj]
         dim: object bounding box dimensions [N_rays, N_obj, 3]
         one_intersec_per_ray: If True only the first interesection along a ray will lead to an
@@ -468,7 +468,7 @@ def box_pts(rays, pose, theta_y, dim=None, one_intersec_per_ray=False):
     if z_ray_in_o is not None:
         # Calculate the intersection points for each box in each object frame
         pts_box_in_o = rays_o_o[intersection_map] + \
-                       z_ray_in_o[:, None] * dirs_o[intersection_map]
+                       z_ray_in_o[:, None] * dirs_o[intersection_map] # ある物体に交差する最初の点
 
         # Transform the intersection points for each box in world frame
         pts_box_in_w, _ = world2object(pts_box_in_o,
@@ -507,7 +507,7 @@ def box_pts(rays, pose, theta_y, dim=None, one_intersec_per_ray=False):
         # Get the far intersection points and integration steps for each ray-box intersection in world and object frames
         pts_box_out_o = rays_o_o[intersection_map] + \
                         z_ray_out_o[:, None] * dirs_o[intersection_map]
-        pts_box_out_w, _ = world2object(pts_box_out_o, #TODO why pts_box_out_o?
+        pts_box_out_w, _ = world2object(pts_box_out_o,
                                        None,
                                        pose[intersection_map],
                                        theta_y[intersection_map],

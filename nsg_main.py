@@ -472,7 +472,7 @@ def render_rays(ray_batch,
 
                             inputs_obj_k = inputs[input_indices]
                             viewdirs_obj_k = viewdirs_obj[input_indices[0]] if N_samples_obj == 1 else \
-                                viewdirs_obj[input_indices[0][:,0]] #TODO　違うかも
+                                viewdirs_obj[input_indices[0][:,0]]
 
                             # Predict RGB and density from object model
                             raw_k = network_query_fn(inputs_obj_k, viewdirs_obj_k, obj_network_fn)
