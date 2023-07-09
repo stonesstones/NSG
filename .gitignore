@@ -22,8 +22,14 @@ axcana.egg-info
 *.gz
 *.avi
 /example_weights/
+/example_weights1/
 data_loader/__pycache__/
 work/
 log4txt
 .venv
 dataset
+recipe
+docker/nerfstudio2.sif
+docker/test.txt
+docker/nsg.def
+.log/log_train_kitti.txt

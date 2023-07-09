@@ -1,9 +1,9 @@
 # conda create -n neural_scene_graphs --file requirements.txt -c conda-forge -c menpo
-python=3.6
-pip
-cudatoolkit=10.0.130
-tensorflow-gpu==1.15
-numpy
+# python=3.6
+# pip
+# cudatoolkit=10.0.130
+# tensorflow-gpu==1.15
+numpy=1.22.2
 matplotlib
 imageio
 imageio-ffmpeg
@@ -13,4 +13,7 @@ pillow
 opencv3
 
 # Add NeuralSceneGraph to the path
-
+# look at the URL
+# https://docs.nerf.studio/en/latest/quickstart/installation.html
+# tensorboard==2.12.0 for tensorflow
+# tensorboard==2.13.0 for nerfstudio
