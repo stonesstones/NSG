@@ -292,7 +292,7 @@ def get_all_ray_3dbox_intersection(rays_rgb, obj_meta_tensor, chunk, local=False
         _obj_pose = _objs[..., :3]
         _obj_theta = _objs[..., 3]
         _obj_id = _objs[..., 4].to(torch.int32)
-        _obj_meta = obj_meta_tensor[_obj_id] #TODO　ほんと？
+        _obj_meta = obj_meta_tensor[_obj_id]
         _obj_track_id = _obj_meta[..., 0].unsqueeze(-1)
         _obj_dim = _obj_meta[..., 1:4]
 

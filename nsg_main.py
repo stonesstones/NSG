@@ -478,7 +478,6 @@ def render_rays(ray_batch,
                             raw_k = network_query_fn(inputs_obj_k, viewdirs_obj_k, obj_network_fn)
 
                             if n_intersect is not None:
-                                #TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO check
                                 # Arrange RGB and denisty from object models along the respective rays
                                 tmp_raw_k = torch.zeros([n_intersect, N_samples_obj, 4]).to(device)
                                 tmp_raw_k[input_indices] = raw_k # Project the network outputs to the corresponding ray 
@@ -1081,6 +1080,7 @@ def train():
         device = torch.device('cuda')
     else:
         device = torch.device('cpu')
+    device = torch.device('cpu')
 
     if args.random_seed is not None:
         print('Fixing random seed', args.random_seed)
