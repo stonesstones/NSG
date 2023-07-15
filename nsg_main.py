@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 import imageio
 import cv2
 import torch
+from torch import nn
 from collections import OrderedDict
 from models import MyRaySamples, Frustums
 from nerfstudio.field_components.field_heads import FieldHeadNames
@@ -883,6 +884,7 @@ def create_nerf(args, device):
         base_mlp_num_layers=args.netdepth, base_mlp_layer_width=args.netwidth,
         head_mlp_num_layers=args.netdepth//2, head_mlp_layer_width=args.netwidth//2, skips=skips,
         trainable=trainable)
+    nn.init.constant_(model.mlp_base.layers[-1].bias, -5)
     models = {'model': model.to(device)}
     grad_vars = list(model.parameters())
 
@@ -902,29 +904,38 @@ def create_nerf(args, device):
     latent_encodings = None if args.latent_size < 1 else {}
     if args.use_object_properties and not args.bckg_only:
         models_dynamic_dict = {}
-        obj_dir_enc, input_ch_obj = get_embedder(
-            args.multires_obj, -1 if args.multires_obj == -1 else args.i_embed, input_dims=6)
+        obj_dir_enc, input_ch_obj_dir = get_embedder(
+            args.multires_obj - 2, -1 if args.multires_obj == -1 else args.i_embed, input_dims=6)
+        obj_pos_enc, input_ch_obj_pos = get_embedder(
+            args.multires_obj, -1 if args.multires_obj == -1 else args.i_embed, input_dims=3)
         obj_dir_enc.to(device)
+        obj_pos_enc.to(device)
 
         # Version a: One Network per object
         if args.latent_size < 1:
+            if args.use_obj_meta:
+                pre_trained_model_ckpt = os.path.join(args.obj_meta_dir)
+
             input_ch = input_ch
             input_ch_color_head = input_ch_views
             # Don't add object location input for setting 1
             if args.object_setting != 1:
-                input_ch_color_head += input_ch_obj
+                input_ch_color_head += input_ch_obj_dir
             # TODO: Change to number of objects in Frames
             for object_i in args.scene_objects:
 
                 model_name = 'model_obj_' + str(int(object_i)) # .zfill(5)
 
                 model_obj = init_nerf_model(
-                    pos_enc=pos_enc, dir_enc=obj_dir_enc,
-                    base_mlp_num_layers=args.netdepth, base_mlp_layer_width=args.netwidth,
+                    pos_enc=obj_pos_enc, dir_enc=obj_dir_enc,
+                    base_mlp_num_layers=args.netdepth//2, base_mlp_layer_width=args.netwidth//2,
                     head_mlp_num_layers=args.netdepth//2, head_mlp_layer_width=args.netwidth//2, skips=skips,
                     trainable=trainable)
                     # latent_size=args.latent_size)
-
+                if args.use_obj_meta:
+                    print('Reloading model from', pre_trained_model_ckpt, 'for', model_name)
+                    model_obj.mlp_base.load_state_dict(torch.load(pre_trained_model_ckpt))
+                    nn.init.constant_(model_obj.mlp_base.layers[-1].bias, 0.1)
                 grad_vars += list(model_obj.parameters())
                 models[model_name] = model_obj.to(device)
                 models_dynamic_dict[model_name] = model_obj.to(device)
@@ -935,7 +946,7 @@ def create_nerf(args, device):
             input_ch_color_head = input_ch_views
             # Don't add object location input for setting 1
             if args.object_setting != 1:
-                input_ch_color_head += input_ch_obj
+                input_ch_color_head += input_ch_obj_dir
 
             for obj_class in args.scene_classes:
                 model_name = 'model_class_' + str(int(obj_class)).zfill(5)
@@ -1027,7 +1038,6 @@ def create_nerf(args, device):
         model.load_state_dict(torch.load(ft_weights))
         start = int(ft_weights[-10:-4]) + 1
         print('Resetting step to', start)
-
         if model_fine is not None:
             ft_weights_fine = '{}_fine_{}'.format(
                 ft_weights[:-11], ft_weights[-10:])
@@ -1039,7 +1049,7 @@ def create_nerf(args, device):
                     ft_weights_obj = obj_ckpts[model_dyn_name]
                 else:
                     ft_weights_obj = '{}'.format(ft_weights[:-16]) + \
-                                     model_dyn_name + '_{}'.format(ft_weights[-10:])
+                                    model_dyn_name + '_{}'.format(ft_weights[-10:])
                 print('Reloading model from', ft_weights_obj, 'for', model_dyn_name[6:])
                 model_dyn.load_state_dict(torch.load(ft_weights_obj))
 
@@ -1080,7 +1090,6 @@ def train():
         device = torch.device('cuda')
     else:
         device = torch.device('cpu')
-    device = torch.device('cpu')
 
     if args.random_seed is not None:
         print('Fixing random seed', args.random_seed)

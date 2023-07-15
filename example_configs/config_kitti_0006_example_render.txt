@@ -2,6 +2,7 @@ expname = kitti_tracking_0006_example
 basedir = ./example_weights
 datadir =  /home/atsuya/tier4/neural-scene-graphs/dataset/kitti/training/image02/0006
 dataset_type = kitti
+obj_meta_dir=./data/meta_data.pth
 
 lrate=5e-4
 lrate_decay=250
@@ -19,6 +20,7 @@ box_scale=1.9
 
 use_object_properties=True
 multires_obj=4
+# use_obj_meta=True
 
 use_viewdirs = True
 
@@ -38,4 +40,4 @@ far_plane=150.
 
 # No ego motion + driving cars
 first_frame=65
-last_frame=67
+last_frame=66

@@ -4,6 +4,7 @@ import tensorflow as tf
 import numpy as np
 import lpips_tf
 from cv2 import *
+import cv2
 from matplotlib import pyplot as plt
 
 calcOpticalFlow = cv2.calcOpticalFlowFarneback
