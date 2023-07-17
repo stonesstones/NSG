@@ -670,9 +670,9 @@ def render(H,
         rays_o = rays_o.to(device)
         rays_d = rays_d.to(device)
         if obj is not None:
-            obj = torch.repeat_interleave(obj[None, ...], H*W, dim=0)
+            obj = torch.repeat_interleave(obj[None, ...], H*W, dim=0).to(device)
         if time_stamp is not None:
-            time_stamp = torch.repeat_interleave(time_stamp[None, ...], H*W, dim=0)
+            time_stamp = torch.repeat_interleave(time_stamp[None, ...], H*W, dim=0).to(device)
     else:
         # use provided ray batch
         rays_o, rays_d = rays
@@ -804,7 +804,7 @@ def render_path(render_poses, hwf, chunk, render_kwargs, obj=None, obj_meta=None
                 obj_i = render_set_i[0]
 
                 if obj_meta is not None:
-                    obj_i_metadata = obj_meta[torch.tensor(obj_i[:, 4], dtype=torch.int32)]
+                    obj_i_metadata = obj_meta[obj_i[:, 4].to(torch.int32)]
                     batch_track_id = obj_i_metadata[..., 0]
 
                     print("Next Frame includes Objects: ")
@@ -841,7 +841,7 @@ def render_path(render_poses, hwf, chunk, render_kwargs, obj=None, obj_meta=None
                     print(p)
 
                 if savedir is not None:
-                    rgb8 = to8b(rgbs[-1])
+                    rgb8 = to8b(torch.tensor(rgbs[-1])).numpy()
                     filename = os.path.join(savedir, '{:03d}.png'.format(j))
                     imageio.imwrite(filename, rgb8)
                     if render_manipulation is not None:
@@ -931,7 +931,7 @@ def create_nerf(args, device):
                     base_mlp_num_layers=args.netdepth//2, base_mlp_layer_width=args.netwidth//2,
                     head_mlp_num_layers=args.netdepth//2, head_mlp_layer_width=args.netwidth//2, skips=skips,
                     trainable=trainable)
-                    # latent_size=args.latent_size)
+                    # latent_size=args.latent_size
                 if args.use_obj_meta:
                     print('Reloading model from', pre_trained_model_ckpt, 'for', model_name)
                     model_obj.mlp_base.load_state_dict(torch.load(pre_trained_model_ckpt))
@@ -1349,7 +1349,7 @@ def train():
             macro_block_size = 16
 
         imageio.mimwrite(os.path.join(testsavedir, 'video.mp4'),
-                         to8b(rgbs), fps=30, quality=10, macro_block_size=macro_block_size)
+                         to8b(torch.tensor(rgbs)).numpy(), fps=30, quality=10, macro_block_size=macro_block_size)
 
         return
 

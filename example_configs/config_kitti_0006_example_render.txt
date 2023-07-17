@@ -19,8 +19,8 @@ latent_balance = 0.0001
 box_scale=1.9
 
 use_object_properties=True
-multires_obj=4
-# use_obj_meta=True
+multires_obj=6
+use_obj_meta=True
 
 use_viewdirs = True
 
@@ -32,7 +32,7 @@ render_only=True
 # bckg_only=True
 # obj_only=True
 # white_bkgd=True
-# manipulate=handcrafted_set_06
+# manipulate=rotate
 
 # Scene06
 near_plane=.5
