@@ -1,6 +1,7 @@
 expname = kitti_tracking_0006_example
-basedir = ./example_weights
-datadir =  /home/atsuya/tier4/neural-scene-graphs/dataset/kitti/training/image02/0006
+basedir = ./example_weights_65-75_nometa
+datadir = /groups/gcd50654/tier4/dataset/kitti/training/image02/0006
+#datadir =  /home/atsuya/tier4/neural-scene-graphs/dataset/kitti/training/image02/0006
 dataset_type = kitti
 obj_meta_dir=./data/meta_data.pth
 
@@ -32,7 +33,7 @@ render_only=True
 # bckg_only=True
 # obj_only=True
 # white_bkgd=True
-# manipulate=rotate
+manipulate=rotate
 
 # Scene06
 near_plane=.5
@@ -40,4 +41,4 @@ far_plane=150.
 
 # No ego motion + driving cars
 first_frame=65
-last_frame=66
+last_frame=75
