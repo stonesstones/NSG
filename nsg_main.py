@@ -161,7 +161,7 @@ def render_rays(ray_batch,
 
         # The 'distance' from the last integration time is infinity.
         dists = torch.cat(
-            [dists, torch.broadcast_to(torch.tensor(1e10).to(device), dists[..., :1].shape)],
+            [dists.to(device), torch.broadcast_to(torch.tensor(1e10).to(device), dists[..., :1].shape)],
             dim=-1)  # [N_rays, N_samples]
 
         # Multiply each distance by the norm of its corresponding direction ray
@@ -331,8 +331,8 @@ def render_rays(ray_batch,
             if z_vals_in_o is None or len(z_vals_in_o) == 0:
                 if obj_only:
                     # No computation necesary if rays are not intersecting with any objects and no background is selected
-                    raw = torch.zeros([N_rays, 1, 4])
-                    z_vals = torch.zeros([N_rays, 1])
+                    raw = torch.zeros([N_rays, 1, 4]).to(device)
+                    z_vals = torch.zeros([N_rays, 1]).to(device)
 
                     rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(
                         raw, z_vals, rays_d)
@@ -1285,7 +1285,7 @@ def train():
 
     if args.obj_only:
         print('removed bckg model for obj training')
-        del grad_vars[:len(models['model'].parameters())]
+        del grad_vars[:len(list(models['model'].parameters()))]
         models.pop('model')
 
     if args.ft_path is not None and args.ft_path != 'None':

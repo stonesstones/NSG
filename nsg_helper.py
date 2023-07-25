@@ -601,7 +601,10 @@ def combine_z(z_vals_bckg, z_vals_obj_w, intersection_map, N_rays, N_samples, N_
         id_z_vals_bckg:
         id_z_vals_obj:
     """
-    device = z_vals_bckg.device
+    if z_vals_bckg is not None:
+        device = z_vals_bckg.device
+    elif z_vals_obj_w is not None:
+        device = z_vals_obj_w.device
     if z_vals_obj_w is None:
         z_vals_obj_w_sparse = torch.zeros([N_rays, N_obj * N_samples_obj]).to(device)
     else:
@@ -622,7 +625,7 @@ def combine_z(z_vals_bckg, z_vals_obj_w, intersection_map, N_rays, N_samples, N_
         bckg_range = torch.repeat_interleave(sample_range[:, None, None], N_samples, dim=1)
         id_z_vals_bckg = (bckg_range[...,0], torch.searchsorted(z_vals, z_vals_bckg.contiguous()))
     else:
-        z_vals = torch.sort(z_vals_obj_w_sparse, axis=1)
+        z_vals = torch.sort(z_vals_obj_w_sparse, dim=1).values
         id_z_vals_bckg = None
 
     # id_z_vals_obj = tf.concat([obj_range, tf.searchsorted(z_vals, z_vals_obj_w_sparse)], axis=2)
