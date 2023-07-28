@@ -137,7 +137,7 @@ class NeRFField(Field):
             num_layers=base_mlp_num_layers,
             layer_width=base_mlp_layer_width,
             skip_connections=skip_connections,
-            out_activation=nn.ReLU(),
+            out_activation=nn.Softplus(),
         )
 
         self.mlp_head = MLP(

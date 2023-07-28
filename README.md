@@ -176,9 +176,21 @@ cp {image_name}.sif /groups/gcd50654/neural-scene-graphs
 
 ### 1. Rendering 
 学習済みモデルを使用して，レンダリングを行う．
+(example_weightsがあるか確認する)
 ```bash 
 qsub -g gcd50654 infer.sh
 ```
 
 Rendringを行う際のオプションを変えたい場合は，`config_kitti_0006_example_render.txt`中のオプションを適宜変更すればいい．<br>
 例えば，使用するデータセットやNeRFモデルを変更したい場合は，`basedir`, `datadir`, `dataset_type`を変更すればいい．
+
+### 1. Training
+学習を行う
+```bash 
+qsub -g gcd50654 scripts/train.sh
+```
+
+Trainingを行う際のオプションを変えたい場合は，`config_kitti_0006_example_train.txt`中のオプションを適宜変更すればいい．<br>
+例えば，使用するデータセットやNeRFモデルを変更したい場合は，`basedir`, `datadir`, `dataset_type`を変更すればいい．
+
+動物体の事前学習したパラメータを入れる場合は、use_obj_metaをTrueにすれば良い。

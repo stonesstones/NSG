@@ -1,1 +1,1 @@
-PYTHONPATH=. python main.py --config example_configs/config_kitti_0006_example_render.txt
+PYTHONPATH=. python nsg_main.py --config example_configs/config_kitti_0006_example_render.txt

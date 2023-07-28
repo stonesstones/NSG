@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 import imageio
 import cv2
 import torch
+from torch import nn
 from collections import OrderedDict
 from models import MyRaySamples, Frustums
 from nerfstudio.field_components.field_heads import FieldHeadNames
@@ -160,7 +161,7 @@ def render_rays(ray_batch,
 
         # The 'distance' from the last integration time is infinity.
         dists = torch.cat(
-            [dists, torch.broadcast_to(torch.tensor(1e10).to(device), dists[..., :1].shape)],
+            [dists.to(device), torch.broadcast_to(torch.tensor(1e10).to(device), dists[..., :1].shape)],
             dim=-1)  # [N_rays, N_samples]
 
         # Multiply each distance by the norm of its corresponding direction ray
@@ -330,8 +331,8 @@ def render_rays(ray_batch,
             if z_vals_in_o is None or len(z_vals_in_o) == 0:
                 if obj_only:
                     # No computation necesary if rays are not intersecting with any objects and no background is selected
-                    raw = torch.zeros([N_rays, 1, 4])
-                    z_vals = torch.zeros([N_rays, 1])
+                    raw = torch.zeros([N_rays, 1, 4]).to(device)
+                    z_vals = torch.zeros([N_rays, 1]).to(device)
 
                     rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(
                         raw, z_vals, rays_d)
@@ -669,9 +670,9 @@ def render(H,
         rays_o = rays_o.to(device)
         rays_d = rays_d.to(device)
         if obj is not None:
-            obj = torch.repeat_interleave(obj[None, ...], H*W, dim=0)
+            obj = torch.repeat_interleave(obj[None, ...], H*W, dim=0).to(device)
         if time_stamp is not None:
-            time_stamp = torch.repeat_interleave(time_stamp[None, ...], H*W, dim=0)
+            time_stamp = torch.repeat_interleave(time_stamp[None, ...], H*W, dim=0).to(device)
     else:
         # use provided ray batch
         rays_o, rays_d = rays
@@ -803,7 +804,7 @@ def render_path(render_poses, hwf, chunk, render_kwargs, obj=None, obj_meta=None
                 obj_i = render_set_i[0]
 
                 if obj_meta is not None:
-                    obj_i_metadata = obj_meta[torch.tensor(obj_i[:, 4], dtype=torch.int32)]
+                    obj_i_metadata = obj_meta[obj_i[:, 4].to(torch.int32)]
                     batch_track_id = obj_i_metadata[..., 0]
 
                     print("Next Frame includes Objects: ")
@@ -840,7 +841,7 @@ def render_path(render_poses, hwf, chunk, render_kwargs, obj=None, obj_meta=None
                     print(p)
 
                 if savedir is not None:
-                    rgb8 = to8b(rgbs[-1])
+                    rgb8 = to8b(torch.tensor(rgbs[-1])).numpy()
                     filename = os.path.join(savedir, '{:03d}.png'.format(j))
                     imageio.imwrite(filename, rgb8)
                     if render_manipulation is not None:
@@ -883,6 +884,7 @@ def create_nerf(args, device):
         base_mlp_num_layers=args.netdepth, base_mlp_layer_width=args.netwidth,
         head_mlp_num_layers=args.netdepth//2, head_mlp_layer_width=args.netwidth//2, skips=skips,
         trainable=trainable)
+    nn.init.constant_(model.mlp_base.layers[-1].bias, -5)
     models = {'model': model.to(device)}
     grad_vars = list(model.parameters())
 
@@ -902,29 +904,38 @@ def create_nerf(args, device):
     latent_encodings = None if args.latent_size < 1 else {}
     if args.use_object_properties and not args.bckg_only:
         models_dynamic_dict = {}
-        obj_dir_enc, input_ch_obj = get_embedder(
-            args.multires_obj, -1 if args.multires_obj == -1 else args.i_embed, input_dims=6)
+        obj_dir_enc, input_ch_obj_dir = get_embedder(
+            args.multires_obj - 2, -1 if args.multires_obj == -1 else args.i_embed, input_dims=6)
+        obj_pos_enc, input_ch_obj_pos = get_embedder(
+            args.multires_obj, -1 if args.multires_obj == -1 else args.i_embed, input_dims=3)
         obj_dir_enc.to(device)
+        obj_pos_enc.to(device)
 
         # Version a: One Network per object
         if args.latent_size < 1:
+            if args.use_obj_meta:
+                pre_trained_model_ckpt = os.path.join(args.obj_meta_dir)
+
             input_ch = input_ch
             input_ch_color_head = input_ch_views
             # Don't add object location input for setting 1
             if args.object_setting != 1:
-                input_ch_color_head += input_ch_obj
+                input_ch_color_head += input_ch_obj_dir
             # TODO: Change to number of objects in Frames
             for object_i in args.scene_objects:
 
                 model_name = 'model_obj_' + str(int(object_i)) # .zfill(5)
 
                 model_obj = init_nerf_model(
-                    pos_enc=pos_enc, dir_enc=obj_dir_enc,
-                    base_mlp_num_layers=args.netdepth, base_mlp_layer_width=args.netwidth,
+                    pos_enc=obj_pos_enc, dir_enc=obj_dir_enc,
+                    base_mlp_num_layers=args.netdepth//2, base_mlp_layer_width=args.netwidth//2,
                     head_mlp_num_layers=args.netdepth//2, head_mlp_layer_width=args.netwidth//2, skips=skips,
                     trainable=trainable)
-                    # latent_size=args.latent_size)
-
+                    # latent_size=args.latent_size
+                if args.use_obj_meta:
+                    print('Reloading model from', pre_trained_model_ckpt, 'for', model_name)
+                    model_obj.mlp_base.load_state_dict(torch.load(pre_trained_model_ckpt))
+                    nn.init.constant_(model_obj.mlp_base.layers[-1].bias, 0.1)
                 grad_vars += list(model_obj.parameters())
                 models[model_name] = model_obj.to(device)
                 models_dynamic_dict[model_name] = model_obj.to(device)
@@ -935,7 +946,7 @@ def create_nerf(args, device):
             input_ch_color_head = input_ch_views
             # Don't add object location input for setting 1
             if args.object_setting != 1:
-                input_ch_color_head += input_ch_obj
+                input_ch_color_head += input_ch_obj_dir
 
             for obj_class in args.scene_classes:
                 model_name = 'model_class_' + str(int(obj_class)).zfill(5)
@@ -1027,7 +1038,6 @@ def create_nerf(args, device):
         model.load_state_dict(torch.load(ft_weights))
         start = int(ft_weights[-10:-4]) + 1
         print('Resetting step to', start)
-
         if model_fine is not None:
             ft_weights_fine = '{}_fine_{}'.format(
                 ft_weights[:-11], ft_weights[-10:])
@@ -1039,7 +1049,7 @@ def create_nerf(args, device):
                     ft_weights_obj = obj_ckpts[model_dyn_name]
                 else:
                     ft_weights_obj = '{}'.format(ft_weights[:-16]) + \
-                                     model_dyn_name + '_{}'.format(ft_weights[-10:])
+                                    model_dyn_name + '_{}'.format(ft_weights[-10:])
                 print('Reloading model from', ft_weights_obj, 'for', model_dyn_name[6:])
                 model_dyn.load_state_dict(torch.load(ft_weights_obj))
 
@@ -1080,7 +1090,6 @@ def train():
         device = torch.device('cuda')
     else:
         device = torch.device('cpu')
-    device = torch.device('cpu')
 
     if args.random_seed is not None:
         print('Fixing random seed', args.random_seed)
@@ -1276,7 +1285,7 @@ def train():
 
     if args.obj_only:
         print('removed bckg model for obj training')
-        del grad_vars[:len(models['model'].parameters())]
+        del grad_vars[:len(list(models['model'].parameters()))]
         models.pop('model')
 
     if args.ft_path is not None and args.ft_path != 'None':
@@ -1340,7 +1349,7 @@ def train():
             macro_block_size = 16
 
         imageio.mimwrite(os.path.join(testsavedir, 'video.mp4'),
-                         to8b(rgbs), fps=30, quality=10, macro_block_size=macro_block_size)
+                         to8b(torch.tensor(rgbs)).numpy(), fps=30, quality=10, macro_block_size=macro_block_size)
 
         return
 

@@ -9,8 +9,12 @@ def config_parser():
                         help='where to store ckpts and logs')
     parser.add_argument("--datadir", type=str,
                         default='./data/llff/fern', help='input data directory')
+    parser.add_argument("--obj_meta_dir", type=str, default='./data/meta_data.pth',
+                        help='where to load meta data')
 
     # training options
+    parser.add_argument("--use_obj_meta", action='store_true',
+                        help='use objects meta data')
     parser.add_argument("--netdepth", type=int, default=8,
                         help='layers in network')
     parser.add_argument("--netwidth", type=int, default=256,
