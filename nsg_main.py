@@ -934,7 +934,7 @@ def create_nerf(args, device):
                     # latent_size=args.latent_size
                 if args.use_obj_meta:
                     print('Reloading model from', pre_trained_model_ckpt, 'for', model_name)
-                    model_obj.mlp_base.load_state_dict(torch.load(pre_trained_model_ckpt))
+                    model_obj.load_state_dict(torch.load(pre_trained_model_ckpt))
                     nn.init.constant_(model_obj.mlp_base.layers[-1].bias, 0.1)
                 grad_vars += list(model_obj.parameters())
                 models[model_name] = model_obj.to(device)
@@ -1333,7 +1333,7 @@ def train():
         print('test poses shape', render_poses.shape)
 
         # Select random from render_poses
-        render_poses = render_poses[np.random.randint(0, len(render_poses) - 1, np.minimum(3, len(render_poses)))]
+        render_poses = render_poses[np.random.randint(0, len(render_poses) - 1, np.minimum(10, len(render_poses)))]
         with torch.no_grad():
             rgbs, _ = render_path(render_poses, hwf, args.chunk, render_kwargs_test,
                                 obj=obj_nodes if args.use_object_properties and not args.bckg_only else None,
